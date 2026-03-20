@@ -677,6 +677,36 @@ body,
   min-width: 0;
 }
 
+.lessons-detail-header-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.lessons-detail-header-row .lessons-detail-title {
+  margin: 0;
+}
+
+.back-btn {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #374151;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 100ms, border-color 100ms;
+  white-space: nowrap;
+}
+
+.back-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
 .lessons-detail-title {
   font-size: 1.125rem;
   font-weight: 700;
@@ -723,6 +753,31 @@ body,
   font-weight: 600;
   color: #374151;
   font-family: "SF Mono", "Fira Code", monospace;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: default;
+}
+
+.lesson-card-user--clickable {
+  cursor: pointer;
+  color: #6366f1;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 150ms;
+}
+
+.lesson-card-user--clickable:hover {
+  text-decoration-color: #6366f1;
+}
+
+.lesson-card-lesson-id {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6366f1;
+  background: #eef2ff;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
 }
 
 .lesson-card-date {
@@ -848,6 +903,308 @@ body,
   background: #fefce8;
 }
 
+/* ============================
+   User Lookup
+   ============================ */
+
+.lookup-search-bar {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.lookup-input {
+  flex: 1;
+  padding: 0.65rem 1rem;
+  border-radius: 10px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  font-size: 0.9rem;
+  font-family: "SF Mono", "Fira Code", monospace;
+  color: #1a1a2e;
+  transition: border-color 150ms;
+}
+
+.lookup-input::placeholder {
+  color: #9ca3af;
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+.lookup-input:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.lookup-btn {
+  padding: 0.65rem 1.5rem;
+  border-radius: 10px;
+  border: none;
+  background: #1a1a2e;
+  color: #ffffff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 150ms;
+  white-space: nowrap;
+}
+
+.lookup-btn:hover:not(:disabled) {
+  background: #2d2d44;
+}
+
+.lookup-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lookup-profile-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.lookup-profile-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.lookup-profile-name {
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin: 0;
+}
+
+.lookup-profile-uid {
+  font-size: 0.8125rem;
+  color: #9ca3af;
+  font-family: "SF Mono", "Fira Code", monospace;
+  margin: 0.35rem 0 0;
+}
+
+.lookup-metrics {
+  grid-template-columns: repeat(4, 1fr);
+  margin-bottom: 1.25rem;
+}
+
+.lookup-details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.lookup-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.lookup-detail-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lookup-detail-value {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #1a1a2e;
+}
+
+.lookup-lessons-section {
+  margin-top: 0.5rem;
+}
+
+.lookup-lessons-title {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: #1a1a2e;
+  margin: 0 0 1rem;
+}
+
+/* ============================
+   A/B Comparison
+   ============================ */
+
+.ab-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin: 0 0 1.25rem;
+}
+
+.ab-comparison-grid {
+  display: grid;
+  grid-template-columns: 200px 1fr 1fr;
+  gap: 0;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 1.5rem;
+}
+
+.ab-header-cell {
+  padding: 0.85rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #f9fafb;
+  border-bottom: 2px solid #e5e7eb;
+  text-align: center;
+}
+
+.ab-header-cell--test {
+  color: #6366f1;
+}
+
+.ab-header-cell--control {
+  color: #f59e0b;
+}
+
+.ab-label-cell {
+  padding: 0.85rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #374151;
+  background: #f9fafb;
+  border-bottom: 1px solid #f3f4f6;
+  display: flex;
+  align-items: center;
+}
+
+.ab-value-cell {
+  padding: 0.85rem 1rem;
+  font-size: 0.875rem;
+  color: #1a1a2e;
+  border-bottom: 1px solid #f3f4f6;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+}
+
+.ab-big-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.ab-pct {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+/* Rating distribution bars */
+.ab-rating-dist {
+  width: 100%;
+  max-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.ab-rating-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ab-rating-bar-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #6b7280;
+  width: 24px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.ab-rating-bar-track {
+  flex: 1;
+  height: 8px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ab-rating-bar-fill {
+  height: 100%;
+  background: #6366f1;
+  border-radius: 4px;
+  transition: width 300ms ease;
+}
+
+.ab-rating-bar-count {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #374151;
+  width: 20px;
+  text-align: left;
+  flex-shrink: 0;
+}
+
+/* Feedback columns */
+.ab-feedback-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.ab-feedback-col {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.ab-feedback-heading {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #1a1a2e;
+  margin: 0 0 0.75rem;
+}
+
+.ab-no-feedback {
+  font-size: 0.8125rem;
+  color: #9ca3af;
+  margin: 0;
+}
+
+.ab-feedback-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.ab-feedback-item {
+  font-size: 0.8125rem;
+  color: #374151;
+  padding: 0.6rem 0.85rem;
+  background: #fefce8;
+  border-radius: 8px;
+  line-height: 1.5;
+}
+
 /* ── Responsive ────────────── */
 
 @media (max-width: 768px) {
@@ -861,5 +1218,21 @@ body,
 
   .lessons-index-list {
     max-height: 200px;
+  }
+
+  .lookup-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .lookup-search-bar {
+    flex-direction: column;
+  }
+
+  .ab-comparison-grid {
+    grid-template-columns: 120px 1fr 1fr;
+  }
+
+  .ab-feedback-row {
+    grid-template-columns: 1fr;
   }
 }

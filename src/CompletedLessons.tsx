@@ -62,24 +62,39 @@ function parseTranscript(raw: unknown): TranscriptMessage[] {
   }
 }
 
-const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo | undefined }> = ({ lesson: c, user }) => {
+const LessonCard: React.FC<{
+  lesson: CompletedLesson;
+  user: UserInfo | undefined;
+  onUserClick?: (userId: string) => void;
+  showLessonId?: boolean;
+}> = ({ lesson: c, user, onUserClick, showLessonId }) => {
   const [open, setOpen] = useState(false);
   const messages = parseTranscript(c.conversation_transcript);
+  const isUserView = !!showLessonId;
   return (
     <div className="lesson-card">
       <div className="lesson-card-header">
-        <span className="lesson-card-user" title={c.user_id}>
-          {user?.preferred_name || c.user_id.slice(0, 8) + "…"}
-        </span>
+        {!isUserView && (
+          <button
+            className="lesson-card-user lesson-card-user--clickable"
+            title={`View all lessons for ${c.user_id}`}
+            onClick={() => onUserClick?.(c.user_id)}
+          >
+            {user?.preferred_name || c.user_id.slice(0, 8) + "…"}
+          </button>
+        )}
+        {isUserView && (
+          <span className="lesson-card-lesson-id">Lesson #{c.lesson_id}</span>
+        )}
         <span className="lesson-card-date">
           {format(new Date(c.created_at), "MMM d, yyyy h:mm a")}
         </span>
-        {c.user_rating_feedback != null && (
+        {!isUserView && c.user_rating_feedback != null && (
           <span className="lesson-card-rating">
             {c.user_rating_feedback}★
           </span>
         )}
-        {c.ended_early && (
+        {!isUserView && c.ended_early && (
           <span className="lesson-card-badge lesson-card-badge--early">
             Ended Early
           </span>
@@ -94,7 +109,7 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo | undefined
         )}
       </div>
 
-      {user && (
+      {!isUserView && user && (
         <div className="lesson-card-user-props">
           {user.age != null && user.age !== -1 && (
             <span className="user-prop">Age: {user.age}</span>
@@ -140,6 +155,7 @@ const CompletedLessons: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedLessonId, setSelectedLessonId] = useState<number | null>(null);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -249,6 +265,13 @@ const CompletedLessons: React.FC = () => {
     [groupedLessons, selectedLessonId],
   );
 
+  const userLessons = useMemo(() => {
+    if (!selectedUserId) return [];
+    return lessons
+      .filter((l) => l.user_id === selectedUserId)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [lessons, selectedUserId]);
+
   if (loading) {
     return (
       <div className="loading-container">
@@ -295,9 +318,52 @@ const CompletedLessons: React.FC = () => {
         </div>
       </aside>
 
-      {/* Right panel — transcript detail */}
+      {/* Right panel — transcript detail or user timeline */}
       <section className="lessons-detail">
-        {!selectedGroup ? (
+        {selectedUserId ? (
+          <>
+            <div className="lessons-detail-header-row">
+              <button
+                className="back-btn"
+                onClick={() => setSelectedUserId(null)}
+              >
+                &larr; Back
+              </button>
+              <h2 className="lessons-detail-title">
+                {userMap.get(selectedUserId)?.preferred_name || selectedUserId.slice(0, 8) + "…"}
+                <span className="lessons-detail-count">
+                  {userLessons.length} lesson{userLessons.length !== 1 ? "s" : ""}
+                </span>
+              </h2>
+            </div>
+
+            {userMap.get(selectedUserId) && (
+              <div className="lesson-card-user-props" style={{ marginBottom: "1rem", borderRadius: 8 }}>
+                {(() => {
+                  const u = userMap.get(selectedUserId)!;
+                  return (
+                    <>
+                      {u.age != null && u.age !== -1 && <span className="user-prop">Age: {u.age}</span>}
+                      {u.gender && <span className="user-prop">Gender: {u.gender}</span>}
+                      {u.native_language && <span className="user-prop">Lang: {u.native_language}</span>}
+                      {u.time_zone && <span className="user-prop">TZ: {u.time_zone}</span>}
+                      {u.demand_tier && <span className="user-prop">Demand: {u.demand_tier}</span>}
+                      {u.tutor && <span className="user-prop">Tutor: {u.tutor}</span>}
+                      <span className="user-prop">Streak: {u.daily_streak}</span>
+                      <span className="user-prop">{u.payment_status}</span>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
+            <div className="lessons-cards">
+              {userLessons.map((c) => (
+                <LessonCard key={c.id} lesson={c} user={userMap.get(c.user_id)} showLessonId />
+              ))}
+            </div>
+          </>
+        ) : !selectedGroup ? (
           <div className="empty-state">Select a lesson to view transcripts</div>
         ) : (
           <>
@@ -317,7 +383,12 @@ const CompletedLessons: React.FC = () => {
                     new Date(a.created_at).getTime(),
                 )
                 .map((c) => (
-                  <LessonCard key={c.id} lesson={c} user={userMap.get(c.user_id)} />
+                  <LessonCard
+                    key={c.id}
+                    lesson={c}
+                    user={userMap.get(c.user_id)}
+                    onUserClick={(uid) => setSelectedUserId(uid)}
+                  />
                 ))}
             </div>
           </>
