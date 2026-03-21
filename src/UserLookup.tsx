@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./lib/supabase";
 import { format } from "date-fns";
 
@@ -111,16 +111,16 @@ const LessonCard: React.FC<{ lesson: CompletedLesson }> = ({ lesson: c }) => {
   );
 };
 
-const UserLookup: React.FC = () => {
-  const [inputId, setInputId] = useState("");
+const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId }) => {
+  const [inputId, setInputId] = useState(initialUserId || "");
   const [user, setUser] = useState<UserInfo | null>(null);
   const [lessons, setLessons] = useState<CompletedLesson[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
 
-  const handleLookup = async () => {
-    const trimmed = inputId.trim();
+  const handleLookup = async (overrideId?: string) => {
+    const trimmed = (overrideId ?? inputId).trim();
     if (!trimmed) return;
 
     setLoading(true);
@@ -186,6 +186,15 @@ const UserLookup: React.FC = () => {
       setLoading(false);
     }
   };
+
+  const didAutoSearch = useRef(false);
+  useEffect(() => {
+    if (initialUserId && !didAutoSearch.current) {
+      didAutoSearch.current = true;
+      setInputId(initialUserId);
+      handleLookup(initialUserId);
+    }
+  }, [initialUserId]);
 
   const ratedLessons = lessons.filter((l) => l.user_rating_feedback != null);
   const avgRating =

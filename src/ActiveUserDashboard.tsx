@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import "./App.css";
 import { supabase } from "./lib/supabase";
 import {
@@ -15,6 +15,30 @@ import {
   Cell,
   type PieLabelRenderProps,
 } from "recharts";
+import { ResponsiveGridLayout as RGL, type Layout } from "react-grid-layout";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
+import {
+  ComposableMap,
+  Geographies,
+  Geography,
+  ZoomableGroup,
+} from "react-simple-maps";
+
+const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+
+// Our country name → topojson country name
+const COUNTRY_TO_GEO_NAME: Record<string, string> = {
+  "United States": "United States of America",
+  "Czech Republic": "Czechia",
+  "Dominican Republic": "Dominican Rep.",
+  "Bosnia and Herzegovina": "Bosnia and Herz.",
+  "North Macedonia": "Macedonia",
+  "Ivory Coast": "Côte d'Ivoire",
+  "DR Congo": "Dem. Rep. Congo",
+  // These match directly and don't need mapping:
+  // Canada, Mexico, Brazil, Argentina, etc.
+};
 
 interface ActiveUser {
   id: number;
@@ -276,11 +300,69 @@ const COLORS = [
   "#10b981", "#f97316", "#ec4899", "#14b8a6", "#84cc16",
 ];
 
-const ActiveUserDashboard: React.FC = () => {
+const PieChartInner: React.FC<{
+  data: { name: string; value: number }[];
+  total: number;
+  renderPieLabel: (props: PieLabelRenderProps) => React.ReactNode;
+}> = ({ data, total, renderPieLabel }) => (
+  <ResponsiveContainer width="100%" height="100%">
+    <PieChart>
+      <Pie
+        data={data}
+        cx="50%"
+        cy="45%"
+        labelLine={false}
+        label={renderPieLabel}
+        outerRadius={70}
+        innerRadius={35}
+        paddingAngle={2}
+        dataKey="value"
+        isAnimationActive={false}
+      >
+        {data.map((_, index) => (
+          <Cell
+            key={`cell-${index}`}
+            fill={COLORS[index % COLORS.length]}
+            stroke="#ffffff"
+            strokeWidth={1}
+          />
+        ))}
+      </Pie>
+      <Tooltip
+        formatter={(value: number | undefined) => {
+          const v = value ?? 0;
+          return [`${v} (${total > 0 ? ((v / total) * 100).toFixed(1) : 0}%)`];
+        }}
+      />
+      <Legend />
+    </PieChart>
+  </ResponsiveContainer>
+);
+
+const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserClick }) => {
   const [users, setUsers] = useState<ActiveUser[]>([]);
+  const [rawLessons, setRawLessons] = useState<{ user_id: string; created_at: string }[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  // Measure container width for grid layout
+  const gridContainerRef = React.useRef<HTMLDivElement>(null);
+  const [gridWidth, setGridWidth] = useState(1200);
+
+  useEffect(() => {
+    const el = gridContainerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setGridWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(el);
+    setGridWidth(el.clientWidth);
+    return () => observer.disconnect();
+  }, [loading]);
   const [error, setError] = useState<string | null>(null);
   const [selectedCountry, setSelectedCountry] = useState<string>("All");
+  const mapTooltipRef = React.useRef<HTMLDivElement>(null);
 
   // Fetch only ACTIVE and TRIAL users
   useEffect(() => {
@@ -389,8 +471,40 @@ const ActiveUserDashboard: React.FC = () => {
           }
         });
         const deduped = Array.from(seen.values());
+        deduped.sort((a, b) => {
+          const aTime = a.last_logged_in ? new Date(a.last_logged_in).getTime() : 0;
+          const bTime = b.last_logged_in ? new Date(b.last_logged_in).getTime() : 0;
+          return bTime - aTime;
+        });
         console.log(`Fetched ${allData.length} total rows, ${deduped.length} unique users`);
         setUsers(deduped);
+
+        // Fetch completed lessons (only user_id + created_at) for engagement charts
+        let allLessons: { id: number; user_id: string; created_at: string }[] = [];
+        lastId = 0;
+        hasMore = true;
+
+        while (hasMore) {
+          const { data, error } = await supabase
+            .from("completed_lessons")
+            .select("id, user_id, created_at")
+            .in("payment_status", ["ACTIVE", "TRIAL"])
+            .gt("id", lastId)
+            .order("id", { ascending: true })
+            .limit(PAGE_SIZE);
+
+          if (error) throw new Error(error.message);
+
+          if (data && data.length > 0) {
+            allLessons = [...allLessons, ...data];
+            lastId = data[data.length - 1].id;
+            hasMore = data.length === PAGE_SIZE;
+          } else {
+            hasMore = false;
+          }
+        }
+
+        setRawLessons(allLessons.map((l) => ({ user_id: l.user_id, created_at: l.created_at })));
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Unknown error";
         console.error("Fetch Error:", e);
@@ -475,6 +589,21 @@ const ActiveUserDashboard: React.FC = () => {
     [users],
   );
 
+  // geo name → user count for the world map heatmap
+  const countryGeoMap = useMemo(() => {
+    const map = new Map<string, number>();
+    countryDistribution.forEach(({ name, value }) => {
+      const geoName = COUNTRY_TO_GEO_NAME[name] || name;
+      map.set(geoName, value);
+    });
+    return map;
+  }, [countryDistribution]);
+
+  const maxCountryUsers = useMemo(
+    () => Math.max(...countryDistribution.map((d) => d.value), 1),
+    [countryDistribution],
+  );
+
   const ageDistribution = useMemo(() => {
     const buckets: Record<string, number> = {
       "Under 18": 0,
@@ -499,6 +628,39 @@ const ActiveUserDashboard: React.FC = () => {
       .map(([name, value]) => ({ name, value }))
       .filter((d) => d.value > 0);
   }, [filteredUsers]);
+
+  // ── Lesson engagement distributions (filtered by country) ──
+  const filteredUserIds = useMemo(
+    () => new Set(filteredUsers.map((u) => u.user_id)),
+    [filteredUsers],
+  );
+
+  const lessonCountDist = useMemo(() => {
+    const userCount = new Map<string, number>();
+    rawLessons.forEach((l) => {
+      if (!filteredUserIds.has(l.user_id)) return;
+      userCount.set(l.user_id, (userCount.get(l.user_id) || 0) + 1);
+    });
+    const buckets = new Map<number, number>();
+    userCount.forEach((count) => buckets.set(count, (buckets.get(count) || 0) + 1));
+    return Array.from(buckets.entries())
+      .map(([lessons, users]) => ({ name: String(lessons), value: users }))
+      .sort((a, b) => parseInt(a.name) - parseInt(b.name));
+  }, [rawLessons, filteredUserIds]);
+
+  const lessonDaysDist = useMemo(() => {
+    const userDays = new Map<string, Set<string>>();
+    rawLessons.forEach((l) => {
+      if (!filteredUserIds.has(l.user_id)) return;
+      if (!userDays.has(l.user_id)) userDays.set(l.user_id, new Set());
+      userDays.get(l.user_id)!.add(l.created_at.slice(0, 10));
+    });
+    const buckets = new Map<number, number>();
+    userDays.forEach((days) => buckets.set(days.size, (buckets.get(days.size) || 0) + 1));
+    return Array.from(buckets.entries())
+      .map(([days, users]) => ({ name: String(days), value: users }))
+      .sort((a, b) => parseInt(a.name) - parseInt(b.name));
+  }, [rawLessons, filteredUserIds]);
 
   // ── Pie label renderer ─────────────────────────
   const renderPieLabel = ({
@@ -534,84 +696,39 @@ const ActiveUserDashboard: React.FC = () => {
   // ── Reusable chart components ──────────────────
   const total = filteredUsers.length;
 
-  const PieChartCard: React.FC<{
-    title: string;
-    data: { name: string; value: number }[];
-    sliceLimit?: number;
-  }> = ({ title, data, sliceLimit }) => {
-    const displayData = sliceLimit ? data.slice(0, sliceLimit) : data;
-    return (
-      <div className="chart-container">
-        <h3>{title}</h3>
-        <div className="chart-wrapper" style={{ height: "300px" }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={displayData}
-                cx="50%"
-                cy="45%"
-                labelLine={false}
-                label={renderPieLabel}
-                outerRadius={70}
-                innerRadius={35}
-                paddingAngle={2}
-                dataKey="value"
-                isAnimationActive={false}
-              >
-                {displayData.map((_, index) => (
-                  <Cell
-                    key={`cell-${index}`}
-                    fill={COLORS[index % COLORS.length]}
-                    stroke="#ffffff"
-                    strokeWidth={1}
-                  />
-                ))}
-              </Pie>
-              <Tooltip
-                formatter={(value: number | undefined) => {
-                  const v = value ?? 0;
-                  return [`${v} (${total > 0 ? ((v / total) * 100).toFixed(1) : 0}%)`];
-                }}
-              />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    );
+  // ── Grid layout (drag + resize) ─────────────────
+  const LAYOUT_STORAGE_KEY = "versa-dashboard-chart-layouts";
+
+  const defaultLayouts: { lg: Layout[] } = {
+    lg: [
+      { i: "country", x: 0, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "gender", x: 4, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "age", x: 8, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "language", x: 0, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "attribution", x: 4, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "tutor", x: 8, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "demand", x: 0, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "lessonCount", x: 4, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "lessonDays", x: 8, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+    ],
   };
 
-  const BarChartCard: React.FC<{
-    title: string;
-    data: { name: string; value: number }[];
-    color?: string;
-  }> = ({ title, data, color = "#6366f1" }) => (
-    <div className="chart-container">
-      <h3>{title}</h3>
-      <div className="chart-wrapper" style={{ height: "300px" }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
-            <XAxis type="number" tick={{ fontSize: 11 }} />
-            <YAxis
-              type="category"
-              dataKey="name"
-              tick={{ fontSize: 12 }}
-              width={110}
-              interval={0}
-            />
-            <Tooltip
-              formatter={(value: number | undefined) => {
-                const v = value ?? 0;
-                return [`${v} (${total > 0 ? ((v / total) * 100).toFixed(1) : 0}%)`];
-              }}
-            />
-            <Bar dataKey="value" name="Users" fill={color} radius={[0, 4, 4, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
+  const loadLayouts = () => {
+    try {
+      const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch { /* ignore */ }
+    return defaultLayouts;
+  };
+
+  const [gridLayouts, setGridLayouts] = useState(loadLayouts);
+
+  const handleLayoutChange = useCallback((_current: Layout[], allLayouts: { [key: string]: Layout[] }) => {
+    setGridLayouts(allLayouts);
+    try {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(allLayouts));
+    } catch { /* ignore */ }
+  }, []);
 
   // ── Loading state ──────────────────────────────
   if (loading) {
@@ -690,6 +807,68 @@ const ActiveUserDashboard: React.FC = () => {
           </div>
         </header>
 
+        {/* World Map Heatmap */}
+        <section className="world-map-container">
+          <h3 className="world-map-title">Paid Users by Country</h3>
+          <div ref={mapTooltipRef} className="world-map-tooltip" />
+          <ComposableMap
+            projectionConfig={{ scale: 147, center: [0, 20] }}
+            width={800}
+            height={400}
+            style={{ width: "100%", height: "auto", maxHeight: "500px" }}
+          >
+            <ZoomableGroup>
+              <Geographies geography={GEO_URL}>
+                {({ geographies }) =>
+                  geographies.map((geo) => {
+                    const geoName = geo.properties.name;
+                    const count = countryGeoMap.get(geoName) || 0;
+                    const intensity = count > 0 ? Math.max(0.15, count / maxCountryUsers) : 0;
+                    return (
+                      <Geography
+                        key={geo.rsmKey}
+                        geography={geo}
+                        fill={count > 0 ? `rgba(99, 102, 241, ${intensity})` : "#f0f0f0"}
+                        stroke="#d1d5db"
+                        strokeWidth={0.5}
+                        onMouseEnter={(e: React.MouseEvent) => {
+                          const tip = mapTooltipRef.current;
+                          if (!tip) return;
+                          tip.innerHTML = `<strong>${geoName}</strong>: ${count} user${count !== 1 ? "s" : ""}`;
+                          tip.style.display = "block";
+                          tip.style.left = e.clientX + "px";
+                          tip.style.top = e.clientY + "px";
+                        }}
+                        onMouseMove={(e: React.MouseEvent) => {
+                          const tip = mapTooltipRef.current;
+                          if (!tip) return;
+                          tip.style.left = e.clientX + "px";
+                          tip.style.top = e.clientY + "px";
+                        }}
+                        onMouseLeave={() => {
+                          const tip = mapTooltipRef.current;
+                          if (tip) tip.style.display = "none";
+                        }}
+                        style={{
+                          default: { outline: "none" },
+                          hover: { outline: "none", fill: count > 0 ? "#6366f1" : "#e5e7eb" },
+                          pressed: { outline: "none" },
+                        }}
+                      />
+                    );
+                  })
+                }
+              </Geographies>
+            </ZoomableGroup>
+          </ComposableMap>
+          <div className="world-map-legend">
+            <span className="world-map-legend-label">0</span>
+            <div className="world-map-legend-bar" />
+            <span className="world-map-legend-label">{maxCountryUsers}</span>
+            <span className="world-map-legend-suffix">users</span>
+          </div>
+        </section>
+
         {/* KPI Cards */}
         <section className="metrics-grid">
           <div className="metric-card">
@@ -733,24 +912,134 @@ const ActiveUserDashboard: React.FC = () => {
           </div>
         </section>
 
-        {/* Charts */}
-        <section className="charts-row">
-          <BarChartCard title="Users by Country" data={countryDistribution.slice(0, 8)} color="#6366f1" />
-          <PieChartCard title="Gender Distribution" data={genderDistribution} />
-          <BarChartCard title="Age Distribution" data={ageDistribution} color="#8b5cf6" />
-        </section>
+        {/* Charts — draggable & resizable */}
+        <div ref={gridContainerRef}>
+        <RGL
+          className="charts-grid-layout"
+          width={gridWidth}
+          breakpoints={{ lg: 1024, md: 768, sm: 480 }}
+          cols={{ lg: 12, md: 8, sm: 4 }}
+          rowHeight={80}
+          layouts={gridLayouts}
+          onLayoutChange={handleLayoutChange}
+          draggableHandle=".chart-drag-handle"
+          isResizable
+          isDraggable
+          margin={[20, 20] as [number, number]}
+          containerPadding={[0, 0] as [number, number]}
+          compactType="vertical"
+          preventCollision={false}
+        >
+          <div key="country" className="chart-container">
+            <h3 className="chart-drag-handle">Users by Country</h3>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={countryDistribution.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={110} interval={0} />
+                  <Tooltip formatter={(value: number | undefined) => { const v = value ?? 0; return [`${v} (${total > 0 ? ((v / total) * 100).toFixed(1) : 0}%)`]; }} />
+                  <Bar dataKey="value" name="Users" fill="#6366f1" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
 
-        <section className="charts-row">
-          <PieChartCard title="Native Language" data={languageDistribution} sliceLimit={8} />
-          <PieChartCard title="Attribution Source" data={attributionDistribution} />
-          <PieChartCard title="Tutor Selection" data={tutorDistribution} sliceLimit={8} />
-        </section>
+          <div key="gender" className="chart-container">
+            <h3 className="chart-drag-handle">Gender Distribution</h3>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <PieChartInner data={genderDistribution} total={total} renderPieLabel={renderPieLabel} />
+            </div>
+          </div>
 
-        {demandTierDistribution.length > 0 && (
-          <section className="charts-row">
-            <BarChartCard title="Demand Tier" data={demandTierDistribution} color="#06b6d4" />
-          </section>
-        )}
+          <div key="age" className="chart-container">
+            <h3 className="chart-drag-handle">Age Distribution</h3>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={ageDistribution} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={110} interval={0} />
+                  <Tooltip formatter={(value: number | undefined) => { const v = value ?? 0; return [`${v} (${total > 0 ? ((v / total) * 100).toFixed(1) : 0}%)`]; }} />
+                  <Bar dataKey="value" name="Users" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div key="language" className="chart-container">
+            <h3 className="chart-drag-handle">Native Language</h3>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <PieChartInner data={languageDistribution.slice(0, 8)} total={total} renderPieLabel={renderPieLabel} />
+            </div>
+          </div>
+
+          <div key="attribution" className="chart-container">
+            <h3 className="chart-drag-handle">Attribution Source</h3>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <PieChartInner data={attributionDistribution} total={total} renderPieLabel={renderPieLabel} />
+            </div>
+          </div>
+
+          <div key="tutor" className="chart-container">
+            <h3 className="chart-drag-handle">Tutor Selection</h3>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <PieChartInner data={tutorDistribution.slice(0, 8)} total={total} renderPieLabel={renderPieLabel} />
+            </div>
+          </div>
+
+          {demandTierDistribution.length > 0 && (
+            <div key="demand" className="chart-container">
+              <h3 className="chart-drag-handle">Demand Tier</h3>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={demandTierDistribution} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={110} interval={0} />
+                    <Tooltip formatter={(value: number | undefined) => { const v = value ?? 0; return [`${v} (${total > 0 ? ((v / total) * 100).toFixed(1) : 0}%)`]; }} />
+                    <Bar dataKey="value" name="Users" fill="#06b6d4" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {lessonCountDist.length > 0 && (
+            <div key="lessonCount" className="chart-container">
+              <h3 className="chart-drag-handle">Users by Lessons Completed</h3>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={lessonCountDist} margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} label={{ value: "Lessons completed", position: "insideBottom", offset: -2, fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 11 }} label={{ value: "Users", angle: -90, position: "insideLeft", fontSize: 12 }} />
+                    <Tooltip />
+                    <Bar dataKey="value" name="Users" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {lessonDaysDist.length > 0 && (
+            <div key="lessonDays" className="chart-container">
+              <h3 className="chart-drag-handle">Users by Unique Days Active</h3>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={lessonDaysDist} margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} label={{ value: "Unique days", position: "insideBottom", offset: -2, fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 11 }} label={{ value: "Users", angle: -90, position: "insideLeft", fontSize: 12 }} />
+                    <Tooltip />
+                    <Bar dataKey="value" name="Users" fill="#10b981" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+        </RGL>
+        </div>
 
         {/* User Table */}
         <main className="dashboard-main">
@@ -783,7 +1072,11 @@ const ActiveUserDashboard: React.FC = () => {
                   </thead>
                   <tbody className="table-body">
                     {filteredUsers.map((user) => (
-                      <tr key={user.user_id}>
+                      <tr
+                        key={user.user_id}
+                        className={onUserClick ? "table-row--clickable" : ""}
+                        onClick={() => onUserClick?.(user.user_id)}
+                      >
                         <td>{user.preferred_name || "N/A"}</td>
                         <td>
                           <span
