@@ -66,48 +66,57 @@ const App: React.FC = () => {
   const lookupUserId = navState.lookupUserId;
 
   return (
-    <>
-      <nav className="tab-bar">
-        <button
-          className={`tab-btn${activeTab === "dashboard" ? " tab-btn--active" : ""}`}
-          onClick={() => navigate("dashboard")}
-        >
-          Dashboard
-        </button>
-        <button
-          className={`tab-btn${activeTab === "lessons" ? " tab-btn--active" : ""}`}
-          onClick={() => navigate("lessons")}
-        >
-          Lessons
-        </button>
-        <button
-          className={`tab-btn${activeTab === "user-lookup" ? " tab-btn--active" : ""}`}
-          onClick={() => navigate("user-lookup")}
-        >
-          User Lookup
-        </button>
-        <button
-          className={`tab-btn${activeTab === "ab-compare" ? " tab-btn--active" : ""}`}
-          onClick={() => navigate("ab-compare")}
-        >
-          A/B Compare
-        </button>
-      </nav>
-
-      {activeTab === "dashboard" ? (
-        <ActiveUserDashboard onUserClick={handleUserClick} />
-      ) : activeTab === "user-lookup" ? (
-        <UserLookup key={lookupUserId ?? "empty"} initialUserId={lookupUserId} />
-      ) : activeTab === "ab-compare" ? (
-        <ABComparison />
-      ) : (
-        <div className="dashboard-container">
-          <div className="dashboard-inner">
-            <CompletedLessons />
-          </div>
+    <div className="app-layout">
+      <aside className="app-sidebar">
+        <div className="sidebar-brand">
+          <img src="AppIcon.png" alt="Versa Logo" className="versa-logo" />
+          <h1 className="sidebar-title">Versa User Analysis</h1>
         </div>
-      )}
-    </>
+
+        <nav className="sidebar-nav">
+          <button
+            className={`sidebar-nav-btn${activeTab === "dashboard" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("dashboard")}
+          >
+            Dashboard
+          </button>
+          <button
+            className={`sidebar-nav-btn${activeTab === "lessons" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("lessons")}
+          >
+            Lessons
+          </button>
+          <button
+            className={`sidebar-nav-btn${activeTab === "user-lookup" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("user-lookup")}
+          >
+            User Lookup
+          </button>
+          <button
+            className={`sidebar-nav-btn${activeTab === "ab-compare" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("ab-compare")}
+          >
+            A/B Compare
+          </button>
+        </nav>
+      </aside>
+
+      <main className="app-main">
+        {activeTab === "dashboard" ? (
+          <ActiveUserDashboard onUserClick={handleUserClick} />
+        ) : activeTab === "user-lookup" ? (
+          <UserLookup key={lookupUserId ?? "empty"} initialUserId={lookupUserId} />
+        ) : activeTab === "ab-compare" ? (
+          <ABComparison />
+        ) : (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <CompletedLessons />
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
   );
 };
 

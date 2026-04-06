@@ -362,6 +362,10 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   }, [loading]);
   const [error, setError] = useState<string | null>(null);
   const [selectedCountry, setSelectedCountry] = useState<string>("All");
+  const [selectedAttribution, setSelectedAttribution] = useState<string>("All");
+  const [selectedTutor, setSelectedTutor] = useState<string>("All");
+  const [selectedAgeBucket, setSelectedAgeBucket] = useState<string>("All");
+  const [selectedDemandTier, setSelectedDemandTier] = useState<string>("All");
   const mapTooltipRef = React.useRef<HTMLDivElement>(null);
 
   // Fetch only ACTIVE and TRIAL users
@@ -532,19 +536,59 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       .sort((a, b) => b.value - a.value);
   };
 
-  // ── Country list + filtered users ─────────────────
+  // ── Helper: age bucket for a user ─────────────────
+  const getAgeBucket = (age: number | null): string => {
+    if (age === null || age === -1) return "Unknown";
+    if (age < 18) return "Under 18";
+    if (age <= 24) return "18-24";
+    if (age <= 34) return "25-34";
+    if (age <= 44) return "35-44";
+    if (age <= 54) return "45-54";
+    return "55+";
+  };
+
+  // ── Filter option lists ─────────────────
   const availableCountries = useMemo(() => {
     const countries = new Set<string>();
     users.forEach((u) => countries.add(getCountryFromTimezone(u.time_zone)));
     return ["All", ...Array.from(countries).sort()];
   }, [users]);
 
+  const availableAttributions = useMemo(() => {
+    const set = new Set<string>();
+    users.forEach((u) => set.add(u.attribution || "Unknown"));
+    return ["All", ...Array.from(set).sort()];
+  }, [users]);
+
+  const availableTutors = useMemo(() => {
+    const set = new Set<string>();
+    users.forEach((u) => set.add(u.tutor || "Unknown"));
+    return ["All", ...Array.from(set).sort()];
+  }, [users]);
+
+  const availableAgeBuckets = useMemo(() => {
+    const set = new Set<string>();
+    users.forEach((u) => set.add(getAgeBucket(u.age)));
+    const order = ["Under 18", "18-24", "25-34", "35-44", "45-54", "55+", "Unknown"];
+    return ["All", ...order.filter((b) => set.has(b))];
+  }, [users]);
+
+  const availableDemandTiers = useMemo(() => {
+    const set = new Set<string>();
+    users.forEach((u) => { if (u.demand_tier) set.add(u.demand_tier); });
+    return ["All", ...Array.from(set).sort()];
+  }, [users]);
+
   const filteredUsers = useMemo(() => {
-    if (selectedCountry === "All") return users;
-    return users.filter(
-      (u) => getCountryFromTimezone(u.time_zone) === selectedCountry,
-    );
-  }, [users, selectedCountry]);
+    return users.filter((u) => {
+      if (selectedCountry !== "All" && getCountryFromTimezone(u.time_zone) !== selectedCountry) return false;
+      if (selectedAttribution !== "All" && (u.attribution || "Unknown") !== selectedAttribution) return false;
+      if (selectedTutor !== "All" && (u.tutor || "Unknown") !== selectedTutor) return false;
+      if (selectedAgeBucket !== "All" && getAgeBucket(u.age) !== selectedAgeBucket) return false;
+      if (selectedDemandTier !== "All" && u.demand_tier !== selectedDemandTier) return false;
+      return true;
+    });
+  }, [users, selectedCountry, selectedAttribution, selectedTutor, selectedAgeBucket, selectedDemandTier]);
 
   // ── Computed Data (all based on filteredUsers) ────
   const activeCount = useMemo(
@@ -585,8 +629,8 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   );
 
   const countryDistribution = useMemo(
-    () => buildDistribution(users, (u) => getCountryFromTimezone(u.time_zone)),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => getCountryFromTimezone(u.time_zone)),
+    [filteredUsers],
   );
 
   // geo name → user count for the world map heatmap
@@ -697,19 +741,20 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const total = filteredUsers.length;
 
   // ── Grid layout (drag + resize) ─────────────────
-  const LAYOUT_STORAGE_KEY = "versa-dashboard-chart-layouts";
+  const LAYOUT_STORAGE_KEY = "versa-dashboard-chart-layouts-v2";
 
   const defaultLayouts: { lg: Layout[] } = {
     lg: [
-      { i: "country", x: 0, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "gender", x: 4, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "age", x: 8, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "language", x: 0, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "attribution", x: 4, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "tutor", x: 8, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "demand", x: 0, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "lessonCount", x: 4, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "lessonDays", x: 8, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "worldMap", x: 0, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "country", x: 4, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "gender", x: 8, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "age", x: 0, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "language", x: 4, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "attribution", x: 8, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "tutor", x: 0, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "demand", x: 4, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "lessonCount", x: 8, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "lessonDays", x: 0, y: 12, w: 4, h: 4, minW: 3, minH: 3 },
     ],
   };
 
@@ -779,98 +824,76 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
 
   // ── Main dashboard ─────────────────────────────
   return (
-    <div className="dashboard-container">
-      <div className="dashboard-inner">
-        <header className="dashboard-header">
-          <div className="header-left">
-            <img src="AppIcon.png" alt="Versa Logo" className="versa-logo" />
-            <h1 style={{ color: "#1a1a2e", marginLeft: "0.75rem", fontSize: "1.25rem", fontWeight: 600 }}>
-              Versa User Analysis
-            </h1>
-          </div>
+    <div className="dashboard-content-area">
+      {/* Filters bar above charts */}
+      <section className="filters-bar">
+        <div className="filters-bar-inner">
           <div className="filter-dropdown-group">
-            <label htmlFor="country-filter" className="filter-label">
-              Filter by Country:
-            </label>
-            <select
-              id="country-filter"
-              value={selectedCountry}
-              onChange={(e) => setSelectedCountry(e.target.value)}
-              className="filter-select"
-            >
+            <label htmlFor="country-filter" className="filter-label">Country</label>
+            <select id="country-filter" value={selectedCountry} onChange={(e) => setSelectedCountry(e.target.value)} className="filter-select">
               {availableCountries.map((c) => (
-                <option key={c} value={c}>
-                  {c === "All" ? `All Countries (${users.length})` : c}
-                </option>
+                <option key={c} value={c}>{c === "All" ? `All Countries (${users.length})` : c}</option>
               ))}
             </select>
           </div>
-        </header>
 
-        {/* World Map Heatmap */}
-        <section className="world-map-container">
-          <h3 className="world-map-title">Paid Users by Country</h3>
-          <div ref={mapTooltipRef} className="world-map-tooltip" />
-          <ComposableMap
-            projectionConfig={{ scale: 147, center: [0, 20] }}
-            width={800}
-            height={400}
-            style={{ width: "100%", height: "auto", maxHeight: "500px" }}
-          >
-            <ZoomableGroup>
-              <Geographies geography={GEO_URL}>
-                {({ geographies }) =>
-                  geographies.map((geo) => {
-                    const geoName = geo.properties.name;
-                    const count = countryGeoMap.get(geoName) || 0;
-                    const intensity = count > 0 ? Math.max(0.15, count / maxCountryUsers) : 0;
-                    return (
-                      <Geography
-                        key={geo.rsmKey}
-                        geography={geo}
-                        fill={count > 0 ? `rgba(99, 102, 241, ${intensity})` : "#f0f0f0"}
-                        stroke="#d1d5db"
-                        strokeWidth={0.5}
-                        onMouseEnter={(e: React.MouseEvent) => {
-                          const tip = mapTooltipRef.current;
-                          if (!tip) return;
-                          tip.innerHTML = `<strong>${geoName}</strong>: ${count} user${count !== 1 ? "s" : ""}`;
-                          tip.style.display = "block";
-                          tip.style.left = e.clientX + "px";
-                          tip.style.top = e.clientY + "px";
-                        }}
-                        onMouseMove={(e: React.MouseEvent) => {
-                          const tip = mapTooltipRef.current;
-                          if (!tip) return;
-                          tip.style.left = e.clientX + "px";
-                          tip.style.top = e.clientY + "px";
-                        }}
-                        onMouseLeave={() => {
-                          const tip = mapTooltipRef.current;
-                          if (tip) tip.style.display = "none";
-                        }}
-                        style={{
-                          default: { outline: "none" },
-                          hover: { outline: "none", fill: count > 0 ? "#6366f1" : "#e5e7eb" },
-                          pressed: { outline: "none" },
-                        }}
-                      />
-                    );
-                  })
-                }
-              </Geographies>
-            </ZoomableGroup>
-          </ComposableMap>
-          <div className="world-map-legend">
-            <span className="world-map-legend-label">0</span>
-            <div className="world-map-legend-bar" />
-            <span className="world-map-legend-label">{maxCountryUsers}</span>
-            <span className="world-map-legend-suffix">users</span>
+          <div className="filter-dropdown-group">
+            <label htmlFor="attribution-filter" className="filter-label">Attribution</label>
+            <select id="attribution-filter" value={selectedAttribution} onChange={(e) => setSelectedAttribution(e.target.value)} className="filter-select">
+              {availableAttributions.map((a) => (
+                <option key={a} value={a}>{a === "All" ? "All Sources" : a}</option>
+              ))}
+            </select>
           </div>
-        </section>
 
-        {/* KPI Cards */}
-        <section className="metrics-grid">
+          <div className="filter-dropdown-group">
+            <label htmlFor="tutor-filter" className="filter-label">Tutor</label>
+            <select id="tutor-filter" value={selectedTutor} onChange={(e) => setSelectedTutor(e.target.value)} className="filter-select">
+              {availableTutors.map((t) => (
+                <option key={t} value={t}>{t === "All" ? "All Tutors" : t}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-dropdown-group">
+            <label htmlFor="age-filter" className="filter-label">Age Group</label>
+            <select id="age-filter" value={selectedAgeBucket} onChange={(e) => setSelectedAgeBucket(e.target.value)} className="filter-select">
+              {availableAgeBuckets.map((a) => (
+                <option key={a} value={a}>{a === "All" ? "All Ages" : a}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-dropdown-group">
+            <label htmlFor="demand-filter" className="filter-label">Demand Tier</label>
+            <select id="demand-filter" value={selectedDemandTier} onChange={(e) => setSelectedDemandTier(e.target.value)} className="filter-select">
+              {availableDemandTiers.map((d) => (
+                <option key={d} value={d}>{d === "All" ? "All Tiers" : d}</option>
+              ))}
+            </select>
+          </div>
+
+          {(selectedCountry !== "All" || selectedAttribution !== "All" || selectedTutor !== "All" || selectedAgeBucket !== "All" || selectedDemandTier !== "All") && (
+            <button
+              className="filters-clear-btn"
+              onClick={() => {
+                setSelectedCountry("All");
+                setSelectedAttribution("All");
+                setSelectedTutor("All");
+                setSelectedAgeBucket("All");
+                setSelectedDemandTier("All");
+              }}
+            >
+              Clear All
+            </button>
+          )}
+
+          <span className="filters-count">{filteredUsers.length} users</span>
+        </div>
+      </section>
+
+      {/* KPI Cards */}
+      <section className="metrics-grid">
           <div className="metric-card">
             <div className="metric-value">{filteredUsers.length}</div>
             <div className="metric-label">Total Active/Trial</div>
@@ -930,6 +953,63 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           compactType="vertical"
           preventCollision={false}
         >
+          <div key="worldMap" className="chart-container">
+            <h3 className="chart-drag-handle">World Map</h3>
+            <div ref={mapTooltipRef} className="world-map-tooltip" />
+            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+              <ComposableMap
+                projectionConfig={{ scale: 147, center: [0, 20] }}
+                width={800}
+                height={400}
+                style={{ width: "100%", height: "100%" }}
+              >
+                <ZoomableGroup>
+                  <Geographies geography={GEO_URL}>
+                    {({ geographies }) =>
+                      geographies.map((geo) => {
+                        const geoName = geo.properties.name;
+                        const count = countryGeoMap.get(geoName) || 0;
+                        const intensity = count > 0 ? Math.max(0.15, count / maxCountryUsers) : 0;
+                        return (
+                          <Geography
+                            key={geo.rsmKey}
+                            geography={geo}
+                            fill={count > 0 ? `rgba(99, 102, 241, ${intensity})` : "#f0f0f0"}
+                            stroke="#d1d5db"
+                            strokeWidth={0.5}
+                            onMouseEnter={(e: React.MouseEvent) => {
+                              const tip = mapTooltipRef.current;
+                              if (!tip) return;
+                              tip.innerHTML = `<strong>${geoName}</strong>: ${count} user${count !== 1 ? "s" : ""}`;
+                              tip.style.display = "block";
+                              tip.style.left = e.clientX + "px";
+                              tip.style.top = e.clientY + "px";
+                            }}
+                            onMouseMove={(e: React.MouseEvent) => {
+                              const tip = mapTooltipRef.current;
+                              if (!tip) return;
+                              tip.style.left = e.clientX + "px";
+                              tip.style.top = e.clientY + "px";
+                            }}
+                            onMouseLeave={() => {
+                              const tip = mapTooltipRef.current;
+                              if (tip) tip.style.display = "none";
+                            }}
+                            style={{
+                              default: { outline: "none" },
+                              hover: { outline: "none", fill: count > 0 ? "#6366f1" : "#e5e7eb" },
+                              pressed: { outline: "none" },
+                            }}
+                          />
+                        );
+                      })
+                    }
+                  </Geographies>
+                </ZoomableGroup>
+              </ComposableMap>
+            </div>
+          </div>
+
           <div key="country" className="chart-container">
             <h3 className="chart-drag-handle">Users by Country</h3>
             <div style={{ flex: 1, minHeight: 0 }}>
@@ -1110,7 +1190,6 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
             )}
           </div>
         </main>
-      </div>
     </div>
   );
 };

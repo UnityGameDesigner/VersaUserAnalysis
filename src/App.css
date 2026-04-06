@@ -28,7 +28,145 @@ body,
 }
 
 /* ============================
-   Header
+   App Sidebar Layout
+   ============================ */
+
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  color: #1a1a2e;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-sidebar {
+  width: 220px;
+  min-width: 220px;
+  background: #1a1a2e;
+  color: #ffffff;
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem 0.75rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  z-index: 20;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 0.25rem 1.25rem;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-title {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 0;
+  line-height: 1.3;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.sidebar-nav-btn {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 150ms, color 150ms;
+  text-align: left;
+}
+
+.sidebar-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.sidebar-nav-btn--active {
+  background: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  background-color: #f8f9fb;
+  overflow-x: hidden;
+}
+
+/* ============================
+   Filters Bar (above charts)
+   ============================ */
+
+.dashboard-content-area {
+  padding: 1.5rem 2rem;
+}
+
+.filters-bar {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.filters-bar-inner {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.filters-clear-btn {
+  padding: 0.45rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #fca5a5;
+  background: #fef2f2;
+  color: #dc2626;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms;
+  white-space: nowrap;
+  align-self: flex-end;
+}
+
+.filters-clear-btn:hover {
+  background: #fee2e2;
+  border-color: #f87171;
+}
+
+.filters-count {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #6366f1;
+  margin-left: auto;
+  white-space: nowrap;
+  align-self: flex-end;
+  padding-bottom: 0.3rem;
+}
+
+/* ============================
+   Header (legacy, used in loading/error states)
    ============================ */
 
 .dashboard-header {
@@ -46,7 +184,7 @@ body,
 }
 
 .versa-logo {
-  height: 44px;
+  height: 36px;
   object-fit: contain;
   border-radius: 50%;
 }
@@ -73,8 +211,8 @@ body,
 
 .filter-dropdown-group {
   display: flex;
-  align-items: center;
-  gap: 0.6rem;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 .filter-label {
@@ -661,6 +799,47 @@ body,
     align-items: flex-start;
     gap: 1rem;
   }
+
+  .app-layout {
+    flex-direction: column;
+  }
+
+  .app-sidebar {
+    width: 100%;
+    min-width: 100%;
+    height: auto;
+    position: relative;
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem;
+    gap: 0.5rem;
+  }
+
+  .sidebar-brand {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+    padding-right: 1rem;
+    margin-right: auto;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 0.25rem;
+  }
+
+  .sidebar-nav-btn {
+    padding: 0.4rem 0.75rem;
+    font-size: 0.75rem;
+  }
+
+  .dashboard-content-area {
+    padding: 1rem;
+  }
+
+  .filters-bar-inner {
+    gap: 0.5rem;
+  }
 }
 
 @media (max-width: 480px) {
@@ -674,7 +853,7 @@ body,
 }
 
 /* ============================
-   Tab Bar
+   Tab Bar (legacy, kept for compatibility)
    ============================ */
 
 .tab-bar {
