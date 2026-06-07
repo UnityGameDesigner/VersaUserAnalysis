@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { supabase } from "./lib/supabase";
+import {
+  parseTranscript,
+  speakingRatio,
+  estimateLessonDurationMs,
+  formatDuration,
+} from "./lib/lessonMetrics";
 import { format } from "date-fns";
 
 interface CompletedLesson {
@@ -13,6 +19,7 @@ interface CompletedLesson {
   user_rating_feedback: number | null;
   ended_early: boolean | null;
   payment_status: string;
+  word_timeline: unknown;
 }
 
 interface UserInfo {
@@ -28,11 +35,6 @@ interface UserInfo {
   payment_status: string;
 }
 
-interface TranscriptMessage {
-  role: string;
-  text: string;
-}
-
 interface LessonGroup {
   lesson_id: number;
   completions: CompletedLesson[];
@@ -42,26 +44,6 @@ interface LessonGroup {
 const PAGE_SIZE = 1000;
 const SUPABASE_TABLE = "completed_lessons";
 
-function parseTranscript(raw: unknown): TranscriptMessage[] {
-  if (!raw) return [];
-  try {
-    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter(
-        (m: unknown): m is { role: string; text: string } =>
-          typeof m === "object" &&
-          m !== null &&
-          "text" in m &&
-          typeof (m as Record<string, unknown>).text === "string",
-      )
-      .filter((m) => m.role !== "ack")
-      .map((m) => ({ role: m.role ?? "unknown", text: m.text }));
-  } catch {
-    return [];
-  }
-}
-
 const LessonCard: React.FC<{
   lesson: CompletedLesson;
   user: UserInfo | undefined;
@@ -69,8 +51,19 @@ const LessonCard: React.FC<{
   showLessonId?: boolean;
 }> = ({ lesson: c, user, onUserClick, showLessonId }) => {
   const [open, setOpen] = useState(false);
+  const [copiedId, setCopiedId] = useState(false);
   const messages = parseTranscript(c.conversation_transcript);
   const isUserView = !!showLessonId;
+
+  const copyUserId = async () => {
+    try {
+      await navigator.clipboard.writeText(c.user_id);
+      setCopiedId(true);
+      setTimeout(() => setCopiedId(false), 1500);
+    } catch {
+      setCopiedId(false);
+    }
+  };
   return (
     <div className="lesson-card">
       <div className="lesson-card-header">
@@ -86,6 +79,13 @@ const LessonCard: React.FC<{
         {isUserView && (
           <span className="lesson-card-lesson-id">Lesson #{c.lesson_id}</span>
         )}
+        <button
+          className="transcript-toggle"
+          title={`Copy user ID: ${c.user_id}`}
+          onClick={copyUserId}
+        >
+          {copiedId ? "Copied!" : "Copy ID"}
+        </button>
         <span className="lesson-card-date">
           {format(new Date(c.created_at), "MMM d, yyyy h:mm a")}
         </span>
@@ -99,6 +99,38 @@ const LessonCard: React.FC<{
             Ended Early
           </span>
         )}
+        {(() => {
+          const ms = estimateLessonDurationMs(c.word_timeline);
+          if (ms === null) return null;
+          return (
+            <span
+              className="lesson-card-badge lesson-card-badge--duration"
+              title={
+                "Estimated lesson length, from the student's first to last spoken word (word_timeline).\n" +
+                "Lower bound — excludes the tutor's intro before the student speaks and the wrap-up after."
+              }
+            >
+              ⏱ {formatDuration(ms)}
+            </span>
+          );
+        })()}
+        {(() => {
+          const { studentChars, teacherChars, ratio, studentShare } =
+            speakingRatio(messages);
+          if (studentChars + teacherChars === 0) return null;
+          const ratioLabel = ratio === null ? "∞ : 1" : `${ratio.toFixed(2)} : 1`;
+          const sharePct =
+            studentShare === null ? "" : ` · ${Math.round(studentShare * 100)}% student`;
+          return (
+            <span
+              className="lesson-card-badge lesson-card-badge--ratio"
+              title={`Student-to-teacher speaking ratio (by characters)\nStudent: ${studentChars} chars · Teacher: ${teacherChars} chars`}
+            >
+              🗣 {ratioLabel}
+              {sharePct}
+            </span>
+          );
+        })()}
         {messages.length > 0 && (
           <button
             className="transcript-toggle"
@@ -174,7 +206,7 @@ const CompletedLessons: React.FC = () => {
             .select(
               `id, created_at, user_id, lesson_id, conversation_transcript,
                phrase_feedback, user_improvement_feedback, user_rating_feedback,
-               ended_early, payment_status`,
+               ended_early, payment_status, word_timeline`,
             )
             .in("payment_status", ["ACTIVE", "TRIAL"])
             .gt("id", lastId)

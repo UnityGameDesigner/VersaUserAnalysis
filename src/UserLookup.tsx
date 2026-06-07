@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./lib/supabase";
+import { translateText } from "./lib/translate";
 import { format } from "date-fns";
 
 interface UserInfo {
@@ -57,7 +58,43 @@ function parseTranscript(raw: unknown): TranscriptMessage[] {
 
 const LessonCard: React.FC<{ lesson: CompletedLesson }> = ({ lesson: c }) => {
   const [open, setOpen] = useState(false);
+  const [copiedText, setCopiedText] = useState(false);
   const messages = parseTranscript(c.conversation_transcript);
+
+  // Per-message translations of the conversation, indexed to match `messages`.
+  const [convTranslations, setConvTranslations] = useState<string[] | null>(null);
+  const [showConvTranslation, setShowConvTranslation] = useState(false);
+  const [translatingConv, setTranslatingConv] = useState(false);
+
+  // Copy the conversation as readable "role: text" lines rather than raw JSON.
+  const copyTranscript = async () => {
+    const text = messages.map((m) => `${m.role}: ${m.text}`).join("\n\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedText(true);
+      setTimeout(() => setCopiedText(false), 1500);
+    } catch {
+      setCopiedText(false);
+    }
+  };
+
+  const handleTranslateConversation = async () => {
+    // Translate once, then just toggle between original and translated views.
+    if (convTranslations) {
+      setShowConvTranslation((v) => !v);
+      return;
+    }
+    setTranslatingConv(true);
+    try {
+      const results = await Promise.all(
+        messages.map((m) => (m.text.trim() ? translateText(m.text) : Promise.resolve(m.text))),
+      );
+      setConvTranslations(results);
+      setShowConvTranslation(true);
+    } finally {
+      setTranslatingConv(false);
+    }
+  };
 
   return (
     <div className="lesson-card">
@@ -84,21 +121,47 @@ const LessonCard: React.FC<{ lesson: CompletedLesson }> = ({ lesson: c }) => {
             {open ? "Hide Conversation" : "Show Conversation"}
           </button>
         )}
+        {messages.length > 0 && (
+          <button className="transcript-toggle" onClick={copyTranscript}>
+            {copiedText ? "Copied!" : "Copy Transcript"}
+          </button>
+        )}
       </div>
 
       {open && messages.length > 0 && (
         <div className="transcript-chat">
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={`chat-bubble chat-bubble--${
-                m.role === "user" ? "user" : "assistant"
-              }`}
+          <div className="transcript-chat-toolbar">
+            <button
+              className="transcript-toggle"
+              onClick={handleTranslateConversation}
+              disabled={translatingConv}
             >
-              <span className="chat-role">{m.role}</span>
-              <p className="chat-content">{m.text}</p>
-            </div>
-          ))}
+              {translatingConv
+                ? "Translating…"
+                : showConvTranslation
+                  ? "Show Original"
+                  : "Translate Conversation"}
+            </button>
+          </div>
+          {messages.map((m, i) => {
+            const translated = showConvTranslation && convTranslations
+              ? convTranslations[i]
+              : null;
+            return (
+              <div
+                key={i}
+                className={`chat-bubble chat-bubble--${
+                  m.role === "user" ? "user" : "assistant"
+                }`}
+              >
+                <span className="chat-role">{m.role}</span>
+                <p className="chat-content">{translated ?? m.text}</p>
+                {translated != null && translated !== m.text && (
+                  <p className="chat-content chat-content--original">{m.text}</p>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -219,7 +282,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           />
           <button
             className="lookup-btn"
-            onClick={handleLookup}
+            onClick={() => handleLookup()}
             disabled={loading || !inputId.trim()}
           >
             {loading ? "Searching..." : "Look Up"}

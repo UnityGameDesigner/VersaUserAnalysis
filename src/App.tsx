@@ -4,18 +4,20 @@ import ActiveUserDashboard from "./ActiveUserDashboard";
 import CompletedLessons from "./CompletedLessons";
 import UserLookup from "./UserLookup";
 import ABComparison from "./ABComparison";
+import AllTranscripts from "./AllTranscripts";
+import RetentionAnalysis from "./RetentionAnalysis";
 
 interface NavState {
   tab: Tab;
   lookupUserId: string | null;
 }
 
-type Tab = "dashboard" | "lessons" | "user-lookup" | "ab-compare";
+type Tab = "dashboard" | "lessons" | "transcripts" | "retention" | "user-lookup" | "ab-compare";
 
 function stateFromHash(): NavState {
   const hash = window.location.hash.replace("#", "");
   const [tab, userId] = hash.split(":");
-  const validTabs: Tab[] = ["dashboard", "lessons", "user-lookup", "ab-compare"];
+  const validTabs: Tab[] = ["dashboard", "lessons", "transcripts", "retention", "user-lookup", "ab-compare"];
   return {
     tab: validTabs.includes(tab as Tab) ? (tab as Tab) : "dashboard",
     lookupUserId: userId || null,
@@ -87,6 +89,18 @@ const App: React.FC = () => {
             Lessons
           </button>
           <button
+            className={`sidebar-nav-btn${activeTab === "transcripts" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("transcripts")}
+          >
+            All Transcripts
+          </button>
+          <button
+            className={`sidebar-nav-btn${activeTab === "retention" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("retention")}
+          >
+            Retention
+          </button>
+          <button
             className={`sidebar-nav-btn${activeTab === "user-lookup" ? " sidebar-nav-btn--active" : ""}`}
             onClick={() => navigate("user-lookup")}
           >
@@ -108,6 +122,14 @@ const App: React.FC = () => {
           <UserLookup key={lookupUserId ?? "empty"} initialUserId={lookupUserId} />
         ) : activeTab === "ab-compare" ? (
           <ABComparison />
+        ) : activeTab === "transcripts" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <AllTranscripts onUserClick={handleUserClick} />
+            </div>
+          </div>
+        ) : activeTab === "retention" ? (
+          <RetentionAnalysis onUserClick={handleUserClick} />
         ) : (
           <div className="dashboard-container">
             <div className="dashboard-inner">

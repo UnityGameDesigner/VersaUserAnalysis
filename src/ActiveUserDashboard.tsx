@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import "./App.css";
 import { supabase } from "./lib/supabase";
+import { getCountryFromTimezone } from "./lib/timezone";
 import {
   BarChart,
   Bar,
@@ -56,241 +57,12 @@ interface ActiveUser {
   demand_tier: string | null;
 }
 
-// ── Timezone → Country mapping ──────────────────
-const TZ_TO_COUNTRY: Record<string, string> = {
-  // Americas
-  "America/New_York": "United States",
-  "America/Chicago": "United States",
-  "America/Denver": "United States",
-  "America/Los_Angeles": "United States",
-  "America/Phoenix": "United States",
-  "America/Anchorage": "United States",
-  "America/Honolulu": "United States",
-  "America/Detroit": "United States",
-  "America/Indiana/Indianapolis": "United States",
-  "America/Boise": "United States",
-  "America/Juneau": "United States",
-  "America/Adak": "United States",
-  "America/Nome": "United States",
-  "America/Sitka": "United States",
-  "America/Yakutat": "United States",
-  "America/Menominee": "United States",
-  "America/Kentucky/Louisville": "United States",
-  "America/Kentucky/Monticello": "United States",
-  "America/Indiana/Knox": "United States",
-  "America/Indiana/Marengo": "United States",
-  "America/Indiana/Petersburg": "United States",
-  "America/Indiana/Tell_City": "United States",
-  "America/Indiana/Vevay": "United States",
-  "America/Indiana/Vincennes": "United States",
-  "America/Indiana/Winamac": "United States",
-  "America/North_Dakota/Beulah": "United States",
-  "America/North_Dakota/Center": "United States",
-  "America/North_Dakota/New_Salem": "United States",
-  "US/Eastern": "United States",
-  "US/Central": "United States",
-  "US/Mountain": "United States",
-  "US/Pacific": "United States",
-  "US/Alaska": "United States",
-  "US/Hawaii": "United States",
-  "America/Toronto": "Canada",
-  "America/Vancouver": "Canada",
-  "America/Edmonton": "Canada",
-  "America/Winnipeg": "Canada",
-  "America/Halifax": "Canada",
-  "America/St_Johns": "Canada",
-  "America/Regina": "Canada",
-  "Canada/Eastern": "Canada",
-  "Canada/Central": "Canada",
-  "Canada/Mountain": "Canada",
-  "Canada/Pacific": "Canada",
-  "Canada/Atlantic": "Canada",
-  "America/Mexico_City": "Mexico",
-  "America/Cancun": "Mexico",
-  "America/Tijuana": "Mexico",
-  "America/Monterrey": "Mexico",
-  "America/Merida": "Mexico",
-  "America/Chihuahua": "Mexico",
-  "America/Hermosillo": "Mexico",
-  "America/Mazatlan": "Mexico",
-  "America/Sao_Paulo": "Brazil",
-  "America/Fortaleza": "Brazil",
-  "America/Recife": "Brazil",
-  "America/Bahia": "Brazil",
-  "America/Manaus": "Brazil",
-  "America/Belem": "Brazil",
-  "America/Cuiaba": "Brazil",
-  "America/Campo_Grande": "Brazil",
-  "America/Porto_Velho": "Brazil",
-  "America/Rio_Branco": "Brazil",
-  "America/Buenos_Aires": "Argentina",
-  "America/Argentina/Buenos_Aires": "Argentina",
-  "America/Argentina/Cordoba": "Argentina",
-  "America/Bogota": "Colombia",
-  "America/Lima": "Peru",
-  "America/Santiago": "Chile",
-  "America/Caracas": "Venezuela",
-  "America/Guayaquil": "Ecuador",
-  "America/La_Paz": "Bolivia",
-  "America/Asuncion": "Paraguay",
-  "America/Montevideo": "Uruguay",
-  "America/Panama": "Panama",
-  "America/Guatemala": "Guatemala",
-  "America/Costa_Rica": "Costa Rica",
-  "America/Havana": "Cuba",
-  "America/Santo_Domingo": "Dominican Republic",
-  "America/Port-au-Prince": "Haiti",
-  "America/Jamaica": "Jamaica",
-  "America/Port_of_Spain": "Trinidad and Tobago",
-  "America/Tegucigalpa": "Honduras",
-  "America/El_Salvador": "El Salvador",
-  "America/Managua": "Nicaragua",
-  // Europe
-  "Europe/London": "United Kingdom",
-  "Europe/Paris": "France",
-  "Europe/Berlin": "Germany",
-  "Europe/Madrid": "Spain",
-  "Europe/Rome": "Italy",
-  "Europe/Amsterdam": "Netherlands",
-  "Europe/Brussels": "Belgium",
-  "Europe/Zurich": "Switzerland",
-  "Europe/Vienna": "Austria",
-  "Europe/Stockholm": "Sweden",
-  "Europe/Oslo": "Norway",
-  "Europe/Copenhagen": "Denmark",
-  "Europe/Helsinki": "Finland",
-  "Europe/Warsaw": "Poland",
-  "Europe/Prague": "Czech Republic",
-  "Europe/Budapest": "Hungary",
-  "Europe/Bucharest": "Romania",
-  "Europe/Sofia": "Bulgaria",
-  "Europe/Athens": "Greece",
-  "Europe/Istanbul": "Turkey",
-  "Europe/Moscow": "Russia",
-  "Europe/Kiev": "Ukraine",
-  "Europe/Kyiv": "Ukraine",
-  "Europe/Lisbon": "Portugal",
-  "Europe/Dublin": "Ireland",
-  "Europe/Belgrade": "Serbia",
-  "Europe/Zagreb": "Croatia",
-  "Europe/Bratislava": "Slovakia",
-  "Europe/Ljubljana": "Slovenia",
-  "Europe/Tallinn": "Estonia",
-  "Europe/Riga": "Latvia",
-  "Europe/Vilnius": "Lithuania",
-  "Europe/Minsk": "Belarus",
-  "Europe/Chisinau": "Moldova",
-  "Europe/Tirane": "Albania",
-  "Europe/Skopje": "North Macedonia",
-  "Europe/Sarajevo": "Bosnia and Herzegovina",
-  "Europe/Podgorica": "Montenegro",
-  "Europe/Luxembourg": "Luxembourg",
-  "Europe/Malta": "Malta",
-  // Asia
-  "Asia/Tokyo": "Japan",
-  "Asia/Seoul": "South Korea",
-  "Asia/Shanghai": "China",
-  "Asia/Chongqing": "China",
-  "Asia/Hong_Kong": "Hong Kong",
-  "Asia/Taipei": "Taiwan",
-  "Asia/Singapore": "Singapore",
-  "Asia/Kuala_Lumpur": "Malaysia",
-  "Asia/Bangkok": "Thailand",
-  "Asia/Jakarta": "Indonesia",
-  "Asia/Makassar": "Indonesia",
-  "Asia/Jayapura": "Indonesia",
-  "Asia/Pontianak": "Indonesia",
-  "Asia/Manila": "Philippines",
-  "Asia/Ho_Chi_Minh": "Vietnam",
-  "Asia/Saigon": "Vietnam",
-  "Asia/Kolkata": "India",
-  "Asia/Calcutta": "India",
-  "Asia/Colombo": "Sri Lanka",
-  "Asia/Dhaka": "Bangladesh",
-  "Asia/Karachi": "Pakistan",
-  "Asia/Kathmandu": "Nepal",
-  "Asia/Yangon": "Myanmar",
-  "Asia/Phnom_Penh": "Cambodia",
-  "Asia/Vientiane": "Laos",
-  "Asia/Dubai": "United Arab Emirates",
-  "Asia/Riyadh": "Saudi Arabia",
-  "Asia/Qatar": "Qatar",
-  "Asia/Bahrain": "Bahrain",
-  "Asia/Kuwait": "Kuwait",
-  "Asia/Muscat": "Oman",
-  "Asia/Tehran": "Iran",
-  "Asia/Baghdad": "Iraq",
-  "Asia/Beirut": "Lebanon",
-  "Asia/Jerusalem": "Israel",
-  "Asia/Tel_Aviv": "Israel",
-  "Asia/Amman": "Jordan",
-  "Asia/Damascus": "Syria",
-  "Asia/Almaty": "Kazakhstan",
-  "Asia/Tashkent": "Uzbekistan",
-  "Asia/Tbilisi": "Georgia",
-  "Asia/Yerevan": "Armenia",
-  "Asia/Baku": "Azerbaijan",
-  "Asia/Ulaanbaatar": "Mongolia",
-  // Africa
-  "Africa/Cairo": "Egypt",
-  "Africa/Lagos": "Nigeria",
-  "Africa/Nairobi": "Kenya",
-  "Africa/Johannesburg": "South Africa",
-  "Africa/Casablanca": "Morocco",
-  "Africa/Algiers": "Algeria",
-  "Africa/Tunis": "Tunisia",
-  "Africa/Accra": "Ghana",
-  "Africa/Addis_Ababa": "Ethiopia",
-  "Africa/Dar_es_Salaam": "Tanzania",
-  "Africa/Kampala": "Uganda",
-  "Africa/Khartoum": "Sudan",
-  "Africa/Abidjan": "Ivory Coast",
-  "Africa/Dakar": "Senegal",
-  "Africa/Kinshasa": "DR Congo",
-  "Africa/Luanda": "Angola",
-  "Africa/Maputo": "Mozambique",
-  "Africa/Harare": "Zimbabwe",
-  // Oceania
-  "Australia/Sydney": "Australia",
-  "Australia/Melbourne": "Australia",
-  "Australia/Brisbane": "Australia",
-  "Australia/Perth": "Australia",
-  "Australia/Adelaide": "Australia",
-  "Australia/Hobart": "Australia",
-  "Australia/Darwin": "Australia",
-  "Australia/Canberra": "Australia",
-  "Pacific/Auckland": "New Zealand",
-  "Pacific/Chatham": "New Zealand",
-  "Pacific/Fiji": "Fiji",
-  "Pacific/Guam": "Guam",
-  "Pacific/Honolulu": "United States",
-  // Common aliases
-  "GMT": "United Kingdom",
-  "UTC": "Unknown",
-  "EST": "United States",
-  "CST": "United States",
-  "MST": "United States",
-  "PST": "United States",
-};
-
-function getCountryFromTimezone(tz: string | null): string {
-  if (!tz) return "Unknown";
-  if (TZ_TO_COUNTRY[tz]) return TZ_TO_COUNTRY[tz];
-
-  // Fallback: try to infer from the region prefix
-  const parts = tz.split("/");
-  if (parts.length >= 2) {
-    const region = parts[0];
-    // Check all known TZs with same prefix for a majority country
-    const matches = Object.entries(TZ_TO_COUNTRY).filter(
-      ([key]) => key.startsWith(region + "/"),
-    );
-    if (matches.length > 0) {
-      // Return the timezone as-is if we can't map it
-      return tz;
-    }
-  }
-  return tz || "Unknown";
+// Format an ISO timestamp into a short, locale-aware date for table display.
+// Returns "N/A" for missing or unparseable values.
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "N/A";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "N/A" : d.toLocaleDateString();
 }
 
 const SUPABASE_TABLE_NAME = "user_info";
@@ -366,9 +138,15 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const [selectedTutor, setSelectedTutor] = useState<string>("All");
   const [selectedAgeBucket, setSelectedAgeBucket] = useState<string>("All");
   const [selectedDemandTier, setSelectedDemandTier] = useState<string>("All");
+  const [selectedStatus, setSelectedStatus] = useState<string>("All");
+  const [selectedLanguage, setSelectedLanguage] = useState<string>("All");
+  const [selectedGender, setSelectedGender] = useState<string>("All");
+  const [sortBy, setSortBy] = useState<string>("lastLoggedIn");
   const mapTooltipRef = React.useRef<HTMLDivElement>(null);
 
-  // Fetch only ACTIVE and TRIAL users
+  // Fetch only ACTIVE users. The user_info table holds ~163k rows, but ~99.7%
+  // have a null payment_status and only ~421 are ACTIVE — loading the whole
+  // table just to show active users stalls the page, so we filter server-side.
   useEffect(() => {
     const fetchUsers = async () => {
       setLoading(true);
@@ -421,47 +199,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           if (data && data.length > 0) {
             allData = [...allData, ...data];
             lastId = data[data.length - 1].id;
-            console.log(`ACTIVE page: fetched ${data.length} rows (total so far: ${allData.length})`);
-            hasMore = data.length === PAGE_SIZE;
-          } else {
-            hasMore = false;
-          }
-        }
-
-        lastId = 0;
-        hasMore = true;
-
-        while (hasMore) {
-          const { data, error } = await supabase
-            .from(SUPABASE_TABLE_NAME)
-            .select(`
-              id,
-              user_id,
-              preferred_name,
-              age,
-              gender,
-              native_language,
-              tutor,
-              daily_streak,
-              last_logged_in,
-              time_zone,
-              attribution,
-              payment_status,
-              demand_tier
-            `)
-            .eq("payment_status", "TRIAL")
-            .gt("id", lastId)
-            .order("id", { ascending: true })
-            .limit(PAGE_SIZE);
-
-          if (error) {
-            throw new Error(error.message || "Unknown Supabase error.");
-          }
-
-          if (data && data.length > 0) {
-            allData = [...allData, ...data];
-            lastId = data[data.length - 1].id;
-            console.log(`TRIAL page: fetched ${data.length} rows (total so far: ${allData.length})`);
+            console.log(`Fetched ${data.length} rows (total so far: ${allData.length})`);
             hasMore = data.length === PAGE_SIZE;
           } else {
             hasMore = false;
@@ -483,7 +221,8 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
         console.log(`Fetched ${allData.length} total rows, ${deduped.length} unique users`);
         setUsers(deduped);
 
-        // Fetch completed lessons (only user_id + created_at) for engagement charts
+        // Fetch completed lessons (only user_id + created_at) for engagement
+        // charts, scoped to ACTIVE so we don't page the entire lessons table.
         let allLessons: { id: number; user_id: string; created_at: string }[] = [];
         lastId = 0;
         hasMore = true;
@@ -492,7 +231,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           const { data, error } = await supabase
             .from("completed_lessons")
             .select("id, user_id, created_at")
-            .in("payment_status", ["ACTIVE", "TRIAL"])
+            .eq("payment_status", "ACTIVE")
             .gt("id", lastId)
             .order("id", { ascending: true })
             .limit(PAGE_SIZE);
@@ -540,11 +279,15 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const getAgeBucket = (age: number | null): string => {
     if (age === null || age === -1) return "Unknown";
     if (age < 18) return "Under 18";
-    if (age <= 24) return "18-24";
-    if (age <= 34) return "25-34";
-    if (age <= 44) return "35-44";
-    if (age <= 54) return "45-54";
-    return "55+";
+    if (age < 23) return "18–22";
+    if (age < 28) return "23–27";
+    if (age < 33) return "28–32";
+    if (age < 38) return "33–37";
+    if (age < 43) return "38–42";
+    if (age < 48) return "43–47";
+    if (age < 53) return "48–52";
+    if (age < 58) return "53–57";
+    return "58+";
   };
 
   // ── Filter option lists ─────────────────
@@ -573,9 +316,27 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     return ["All", ...order.filter((b) => set.has(b))];
   }, [users]);
 
+  const availableLanguages = useMemo(() => {
+    const set = new Set<string>();
+    users.forEach((u) => set.add(u.native_language || "Unknown"));
+    return ["All", ...Array.from(set).sort()];
+  }, [users]);
+
   const availableDemandTiers = useMemo(() => {
     const set = new Set<string>();
     users.forEach((u) => { if (u.demand_tier) set.add(u.demand_tier); });
+    return ["All", ...Array.from(set).sort()];
+  }, [users]);
+
+  const availableStatuses = useMemo(() => {
+    const set = new Set<string>();
+    users.forEach((u) => { if (u.payment_status) set.add(u.payment_status); });
+    return ["All", ...Array.from(set).sort()];
+  }, [users]);
+
+  const availableGenders = useMemo(() => {
+    const set = new Set<string>();
+    users.forEach((u) => set.add(u.gender || "Unknown"));
     return ["All", ...Array.from(set).sort()];
   }, [users]);
 
@@ -586,9 +347,76 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       if (selectedTutor !== "All" && (u.tutor || "Unknown") !== selectedTutor) return false;
       if (selectedAgeBucket !== "All" && getAgeBucket(u.age) !== selectedAgeBucket) return false;
       if (selectedDemandTier !== "All" && u.demand_tier !== selectedDemandTier) return false;
+      if (selectedStatus !== "All" && u.payment_status !== selectedStatus) return false;
+      if (selectedLanguage !== "All" && (u.native_language || "Unknown") !== selectedLanguage) return false;
+      if (selectedGender !== "All" && (u.gender || "Unknown") !== selectedGender) return false;
       return true;
     });
-  }, [users, selectedCountry, selectedAttribution, selectedTutor, selectedAgeBucket, selectedDemandTier]);
+  }, [users, selectedCountry, selectedAttribution, selectedTutor, selectedAgeBucket, selectedDemandTier, selectedStatus, selectedLanguage, selectedGender]);
+
+  // ── First lesson completed map (user_id → earliest created_at) ──
+  const firstLessonMap = useMemo(() => {
+    const map = new Map<string, string>();
+    rawLessons.forEach((l) => {
+      const existing = map.get(l.user_id);
+      if (!existing || l.created_at < existing) {
+        map.set(l.user_id, l.created_at);
+      }
+    });
+    return map;
+  }, [rawLessons]);
+
+  // ── Sorted users ──
+  const sortedUsers = useMemo(() => {
+    const sorted = [...filteredUsers];
+    switch (sortBy) {
+      case "firstLesson":
+        sorted.sort((a, b) => {
+          const aTime = firstLessonMap.get(a.user_id);
+          const bTime = firstLessonMap.get(b.user_id);
+          if (!aTime && !bTime) return 0;
+          if (!aTime) return 1;
+          if (!bTime) return -1;
+          return new Date(aTime).getTime() - new Date(bTime).getTime();
+        });
+        break;
+      case "firstLessonDesc":
+        sorted.sort((a, b) => {
+          const aTime = firstLessonMap.get(a.user_id);
+          const bTime = firstLessonMap.get(b.user_id);
+          if (!aTime && !bTime) return 0;
+          if (!aTime) return 1;
+          if (!bTime) return -1;
+          return new Date(bTime).getTime() - new Date(aTime).getTime();
+        });
+        break;
+      case "lastLoggedIn":
+        sorted.sort((a, b) => {
+          const aTime = a.last_logged_in ? new Date(a.last_logged_in).getTime() : 0;
+          const bTime = b.last_logged_in ? new Date(b.last_logged_in).getTime() : 0;
+          return bTime - aTime;
+        });
+        break;
+      case "name":
+        sorted.sort((a, b) =>
+          (a.preferred_name || "").localeCompare(b.preferred_name || ""),
+        );
+        break;
+      case "streak":
+        sorted.sort((a, b) => b.daily_streak - a.daily_streak);
+        break;
+      case "age":
+        sorted.sort((a, b) => {
+          const aAge = a.age === null || a.age === -1 ? Infinity : a.age;
+          const bAge = b.age === null || b.age === -1 ? Infinity : b.age;
+          return aAge - bAge;
+        });
+        break;
+      default:
+        break;
+    }
+    return sorted;
+  }, [filteredUsers, sortBy, firstLessonMap]);
 
   // ── Computed Data (all based on filteredUsers) ────
   const activeCount = useMemo(
@@ -651,22 +479,19 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const ageDistribution = useMemo(() => {
     const buckets: Record<string, number> = {
       "Under 18": 0,
-      "18-24": 0,
-      "25-34": 0,
-      "35-44": 0,
-      "45-54": 0,
-      "55+": 0,
+      "18–22": 0,
+      "23–27": 0,
+      "28–32": 0,
+      "33–37": 0,
+      "38–42": 0,
+      "43–47": 0,
+      "48–52": 0,
+      "53–57": 0,
+      "58+": 0,
       "Unknown": 0,
     };
     filteredUsers.forEach((u) => {
-      const age = u.age;
-      if (age === null || age === -1) buckets["Unknown"]++;
-      else if (age < 18) buckets["Under 18"]++;
-      else if (age <= 24) buckets["18-24"]++;
-      else if (age <= 34) buckets["25-34"]++;
-      else if (age <= 44) buckets["35-44"]++;
-      else if (age <= 54) buckets["45-54"]++;
-      else buckets["55+"]++;
+      buckets[getAgeBucket(u.age)]++;
     });
     return Object.entries(buckets)
       .map(([name, value]) => ({ name, value }))
@@ -865,6 +690,15 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           </div>
 
           <div className="filter-dropdown-group">
+            <label htmlFor="language-filter" className="filter-label">Language</label>
+            <select id="language-filter" value={selectedLanguage} onChange={(e) => setSelectedLanguage(e.target.value)} className="filter-select">
+              {availableLanguages.map((l) => (
+                <option key={l} value={l}>{l === "All" ? "All Languages" : l}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-dropdown-group">
             <label htmlFor="demand-filter" className="filter-label">Demand Tier</label>
             <select id="demand-filter" value={selectedDemandTier} onChange={(e) => setSelectedDemandTier(e.target.value)} className="filter-select">
               {availableDemandTiers.map((d) => (
@@ -873,7 +707,25 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
             </select>
           </div>
 
-          {(selectedCountry !== "All" || selectedAttribution !== "All" || selectedTutor !== "All" || selectedAgeBucket !== "All" || selectedDemandTier !== "All") && (
+          <div className="filter-dropdown-group">
+            <label htmlFor="status-filter" className="filter-label">Status</label>
+            <select id="status-filter" value={selectedStatus} onChange={(e) => setSelectedStatus(e.target.value)} className="filter-select">
+              {availableStatuses.map((s) => (
+                <option key={s} value={s}>{s === "All" ? "All Statuses" : s}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-dropdown-group">
+            <label htmlFor="gender-filter" className="filter-label">Gender</label>
+            <select id="gender-filter" value={selectedGender} onChange={(e) => setSelectedGender(e.target.value)} className="filter-select">
+              {availableGenders.map((g) => (
+                <option key={g} value={g}>{g === "All" ? "All Genders" : g}</option>
+              ))}
+            </select>
+          </div>
+
+          {(selectedCountry !== "All" || selectedAttribution !== "All" || selectedTutor !== "All" || selectedAgeBucket !== "All" || selectedDemandTier !== "All" || selectedStatus !== "All" || selectedLanguage !== "All" || selectedGender !== "All") && (
             <button
               className="filters-clear-btn"
               onClick={() => {
@@ -882,6 +734,9 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 setSelectedTutor("All");
                 setSelectedAgeBucket("All");
                 setSelectedDemandTier("All");
+                setSelectedStatus("All");
+                setSelectedLanguage("All");
+                setSelectedGender("All");
               }}
             >
               Clear All
@@ -896,7 +751,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       <section className="metrics-grid">
           <div className="metric-card">
             <div className="metric-value">{filteredUsers.length}</div>
-            <div className="metric-label">Total Active/Trial</div>
+            <div className="metric-label">Active Users</div>
             <div className="metric-description">
               {selectedCountry === "All" ? "All countries" : selectedCountry}
             </div>
@@ -1123,14 +978,29 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
 
         {/* User Table */}
         <main className="dashboard-main">
-          <div className="controls-bar">
-            <h2 className="results-heading">
+          <div className="controls-bar" style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+            <h2 className="results-heading" style={{ margin: 0 }}>
               Users ({filteredUsers.length} total)
             </h2>
+            <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              Sort by:
+              <select
+                className="filter-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="lastLoggedIn">Last Logged In</option>
+                <option value="firstLesson">First Lesson (oldest first)</option>
+                <option value="firstLessonDesc">First Lesson (newest first)</option>
+                <option value="name">Name (A-Z)</option>
+                <option value="streak">Streak (highest first)</option>
+                <option value="age">Age (youngest first)</option>
+              </select>
+            </label>
           </div>
 
           <div className="user-list-container">
-            {filteredUsers.length === 0 ? (
+            {sortedUsers.length === 0 ? (
               <div className="empty-state">
                 No active or trial users found.
               </div>
@@ -1147,25 +1017,53 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                       <th>Gender</th>
                       <th>Streak</th>
                       <th>Tutor</th>
+                      <th>Tier</th>
                       <th>Source</th>
+                      <th>Last Login</th>
+                      <th>First Lesson</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody className="table-body">
-                    {filteredUsers.map((user) => (
+                    {sortedUsers.map((user) => {
+                      const profileUrl = `${window.location.pathname}${window.location.search}#user-lookup:${user.user_id}`;
+                      return (
                       <tr
                         key={user.user_id}
                         className={onUserClick ? "table-row--clickable" : ""}
-                        onClick={() => onUserClick?.(user.user_id)}
+                        onClick={(e) => {
+                          if (e.metaKey || e.ctrlKey) {
+                            window.open(profileUrl, "_blank");
+                            return;
+                          }
+                          onUserClick?.(user.user_id);
+                        }}
+                        onAuxClick={(e) => {
+                          if (e.button === 1) {
+                            e.preventDefault();
+                            window.open(profileUrl, "_blank");
+                          }
+                        }}
                       >
                         <td>{user.preferred_name || "N/A"}</td>
                         <td>
-                          <span
-                            className={`plan-pill plan-pill--${user.payment_status === "ACTIVE" ? "paying" : "trial"}`}
-                          >
-                            {user.payment_status === "ACTIVE"
-                              ? "Active"
-                              : "Trial"}
-                          </span>
+                          {(() => {
+                            const status = user.payment_status || "";
+                            const variant =
+                              status === "ACTIVE"
+                                ? "paying"
+                                : status === "TRIAL"
+                                ? "trial"
+                                : "free";
+                            const label = status
+                              ? status.charAt(0) + status.slice(1).toLowerCase()
+                              : "N/A";
+                            return (
+                              <span className={`plan-pill plan-pill--${variant}`}>
+                                {label}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td>{getCountryFromTimezone(user.time_zone)}</td>
                         <td>{user.native_language || "N/A"}</td>
@@ -1178,12 +1076,43 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                         <td>{user.daily_streak}</td>
                         <td>{user.tutor || "N/A"}</td>
                         <td>
+                          {user.demand_tier ? (
+                            <span
+                              className={`tier-pill tier-pill--${user.demand_tier.toLowerCase()}`}
+                            >
+                              {user.demand_tier}
+                            </span>
+                          ) : (
+                            "N/A"
+                          )}
+                        </td>
+                        <td>
                           <span className="attribution-pill">
                             {user.attribution || "N/A"}
                           </span>
                         </td>
+                        <td>{formatDate(user.last_logged_in)}</td>
+                        <td>{formatDate(firstLessonMap.get(user.user_id))}</td>
+                        <td>
+                          <a
+                            href={profileUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            title="Open profile in new tab"
+                            style={{
+                              textDecoration: "none",
+                              color: "#6b7280",
+                              fontSize: "1rem",
+                              padding: "0 0.25rem",
+                            }}
+                          >
+                            ↗
+                          </a>
+                        </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
