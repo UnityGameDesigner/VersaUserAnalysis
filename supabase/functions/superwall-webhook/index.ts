@@ -65,6 +65,26 @@ function mapRevenueCatStatus(rcType, rcEvent) {
   }
 }
 
+// `user_info.user_id` is a Supabase auth uid. Anything else — Superwall's
+// anonymous alias ($SuperwallAlias:…), RevenueCat's ($RCAnonymousID:…) — means
+// the client never called identify(), so this event can NOT be mapped to a user.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function looksLikeAuthUid(id) {
+  return typeof id === "string" && UUID_RE.test(id.trim());
+}
+
+// One loud, greppable line per dropped purchase. Alert on UNMAPPED_PURCHASE.
+// This is the failure that hid for two months: an .update().eq() that matches
+// zero rows is NOT an error in supabase-js — it returns { error: null } — so the
+// old code logged success and wrote nothing for every Android purchase made
+// while Superwall identify was disabled.
+function reportUnmapped(reason, ctx) {
+  console.error(
+    "🚨 UNMAPPED_PURCHASE",
+    JSON.stringify({ reason, ...ctx })
+  );
+}
+
 // First-conversion timestamp: prefer the provider's own event time, otherwise
 // fall back to receipt time. Accepts ISO strings or epoch-ms numbers.
 function pickConversionTimestamp(source, body, swData, rcEvent) {
@@ -117,31 +137,69 @@ serve(async (req) => {
     // --------------------------------------------------------
     // Detect RevenueCat vs Superwall by shape
     // --------------------------------------------------------
+    let idCandidates = [];
     if (body && typeof body === "object" && "api_version" in body && "event" in body) {
       // RevenueCat
       source = "revenuecat";
       rcEvent = body.event ?? {};
       rawEventType = rcEvent.type ?? null;
-      userId = rcEvent.app_user_id ?? null;
+      // `app_user_id` is the CURRENT id; `original_app_user_id` is the first one
+      // the user ever had — which for an anonymous-then-identified user is the
+      // ANONYMOUS one. Aliases carry both. Prefer whichever is a real auth uid.
+      idCandidates = [
+        rcEvent.app_user_id,
+        ...(Array.isArray(rcEvent.aliases) ? rcEvent.aliases : []),
+        rcEvent.original_app_user_id
+      ];
       paymentStatus = mapRevenueCatStatus(rawEventType, rcEvent);
     } else {
       // Superwall
       source = "superwall";
       swData = body.data ?? {};
       rawEventType = body.type ?? swData?.name ?? null; // usually "initial_purchase"
-      userId = swData.originalAppUserId ?? swData.userAttributes?.appUserId ?? null;
+      // Do NOT trust a single field: the previous code read `originalAppUserId`
+      // alone, and "original" may mean the pre-identify alias. Gather every
+      // plausible carrier and pick the one that is actually an auth uid, so this
+      // keeps working regardless of which field Superwall populates.
+      idCandidates = [
+        swData.appUserId,
+        swData.userId,
+        swData.userAttributes?.appUserId,
+        swData.user?.appUserId,
+        swData.user?.id,
+        swData.originalAppUserId,
+        ...(Array.isArray(swData.aliases) ? swData.aliases : []),
+        body.appUserId
+      ];
       paymentStatus = mapSuperwallStatus(rawEventType, swData);
     }
-    // If we have no userId, we can't map this to user_info.
-    // Return 200 so providers don't retry endlessly.
+    idCandidates = idCandidates.filter((v) => typeof v === "string" && v.trim() !== "").map((v) => v.trim());
+    // The auth uid wins wherever it appears; otherwise keep the first id we saw
+    // purely so the unmapped report can show what the provider actually sent.
+    userId = idCandidates.find(looksLikeAuthUid) ?? idCandidates[0] ?? null;
+    // No id at all. If the event carries money (a recognized subscription
+    // lifecycle event) this is a lost payment and must alarm. If it does not
+    // (UNKNOWN — provider test pings and event types we don't map), stay quiet:
+    // alarming on those is how an alert channel becomes noise and gets ignored.
+    // Return 200 either way so providers don't retry endlessly.
     if (!userId) {
-      console.log("ℹ️ Webhook with no userId, ignoring", {
-        source,
-        rawEventType
-      });
+      const carriesMoney = paymentStatus !== "UNKNOWN";
+      if (carriesMoney) {
+        reportUnmapped("missing_user_id", {
+          source,
+          eventType: rawEventType,
+          paymentStatus
+        });
+      } else {
+        console.log("ℹ️ Webhook with no userId and no mapped status, ignoring", {
+          source,
+          rawEventType
+        });
+      }
       return new Response(JSON.stringify({
-        ok: true,
-        ignored: true,
+        ok: !carriesMoney,
+        ignored: !carriesMoney,
+        unmapped: carriesMoney,
         reason: "missing_user_id",
         source,
         eventType: rawEventType
@@ -158,10 +216,41 @@ serve(async (req) => {
       rawEventType,
       paymentStatus
     });
+    // The id must be an auth uid. An anonymous alias means identify() never ran
+    // on that device, so there is nothing in user_info to match and writing is
+    // pointless. Fail loudly instead of no-opping.
+    if (!looksLikeAuthUid(userId)) {
+      reportUnmapped("anonymous_app_user_id", {
+        source,
+        userId,
+        // Every id the payload carried. If a real uid shows up here under a
+        // field we are not reading, that is the bug — add the field above.
+        idCandidates,
+        eventType: rawEventType,
+        paymentStatus
+      });
+      // 200: the provider did nothing wrong, and a retry would not help.
+      return new Response(JSON.stringify({
+        ok: false,
+        unmapped: true,
+        reason: "anonymous_app_user_id",
+        source,
+        userId,
+        eventType: rawEventType
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      });
+    }
+
     // Even if status is UNKNOWN, we still write it — so DB is the source of truth.
-    const { error } = await supabase.from("user_info").update({
+    // `.select("user_id")` is load-bearing: without it there is no way to tell an
+    // update that hit a row from one that matched nothing — both return error: null.
+    const { data: updated, error } = await supabase.from("user_info").update({
       payment_status: paymentStatus
-    }).eq("user_id", userId); // change to .eq("id", userId) if your PK is numeric
+    }).eq("user_id", userId).select("user_id");
     if (error) {
       console.error("Error updating payment_status:", error);
       return new Response(JSON.stringify({
@@ -175,6 +264,33 @@ serve(async (req) => {
         }
       });
     }
+    // A well-formed uid that matches no row: a real payment we cannot credit.
+    if (!updated || updated.length === 0) {
+      reportUnmapped("user_not_found", {
+        source,
+        userId,
+        eventType: rawEventType,
+        paymentStatus
+      });
+      return new Response(JSON.stringify({
+        ok: false,
+        unmapped: true,
+        reason: "user_not_found",
+        source,
+        userId,
+        eventType: rawEventType
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      });
+    }
+    console.log("💾 payment_status written:", {
+      userId,
+      paymentStatus,
+      rowsUpdated: updated.length
+    });
     // Stamp the FIRST time the user became paid/ACTIVE (write-once). The
     // `.is("became_active_at", null)` guard means renewals and re-subscribes
     // never overwrite the original conversion date.
