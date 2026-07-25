@@ -5,19 +5,23 @@ import CompletedLessons from "./CompletedLessons";
 import UserLookup from "./UserLookup";
 import ABComparison from "./ABComparison";
 import AllTranscripts from "./AllTranscripts";
+import Saved from "./Saved";
 import RetentionAnalysis from "./RetentionAnalysis";
+import Feedback from "./Feedback";
+import Evaluations from "./Evaluations";
+import RecentUsers from "./RecentUsers";
 
 interface NavState {
   tab: Tab;
   lookupUserId: string | null;
 }
 
-type Tab = "dashboard" | "lessons" | "transcripts" | "retention" | "user-lookup" | "ab-compare";
+type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "feedback" | "retention" | "user-lookup" | "ab-compare";
 
 function stateFromHash(): NavState {
   const hash = window.location.hash.replace("#", "");
   const [tab, userId] = hash.split(":");
-  const validTabs: Tab[] = ["dashboard", "lessons", "transcripts", "retention", "user-lookup", "ab-compare"];
+  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "feedback", "retention", "user-lookup", "ab-compare"];
   return {
     tab: validTabs.includes(tab as Tab) ? (tab as Tab) : "dashboard",
     lookupUserId: userId || null,
@@ -83,6 +87,12 @@ const App: React.FC = () => {
             Dashboard
           </button>
           <button
+            className={`sidebar-nav-btn${activeTab === "recent" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("recent")}
+          >
+            Recent Users
+          </button>
+          <button
             className={`sidebar-nav-btn${activeTab === "lessons" ? " sidebar-nav-btn--active" : ""}`}
             onClick={() => navigate("lessons")}
           >
@@ -93,6 +103,24 @@ const App: React.FC = () => {
             onClick={() => navigate("transcripts")}
           >
             All Transcripts
+          </button>
+          <button
+            className={`sidebar-nav-btn${activeTab === "saved" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("saved")}
+          >
+            Saved
+          </button>
+          <button
+            className={`sidebar-nav-btn${activeTab === "evaluations" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("evaluations")}
+          >
+            Evaluations
+          </button>
+          <button
+            className={`sidebar-nav-btn${activeTab === "feedback" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("feedback")}
+          >
+            Feedback
           </button>
           <button
             className={`sidebar-nav-btn${activeTab === "retention" ? " sidebar-nav-btn--active" : ""}`}
@@ -118,6 +146,12 @@ const App: React.FC = () => {
       <main className="app-main">
         {activeTab === "dashboard" ? (
           <ActiveUserDashboard onUserClick={handleUserClick} />
+        ) : activeTab === "recent" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <RecentUsers />
+            </div>
+          </div>
         ) : activeTab === "user-lookup" ? (
           <UserLookup key={lookupUserId ?? "empty"} initialUserId={lookupUserId} />
         ) : activeTab === "ab-compare" ? (
@@ -126,6 +160,24 @@ const App: React.FC = () => {
           <div className="dashboard-container">
             <div className="dashboard-inner">
               <AllTranscripts onUserClick={handleUserClick} />
+            </div>
+          </div>
+        ) : activeTab === "saved" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <Saved onUserClick={handleUserClick} />
+            </div>
+          </div>
+        ) : activeTab === "evaluations" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <Evaluations onUserClick={handleUserClick} />
+            </div>
+          </div>
+        ) : activeTab === "feedback" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <Feedback onUserClick={handleUserClick} />
             </div>
           </div>
         ) : activeTab === "retention" ? (

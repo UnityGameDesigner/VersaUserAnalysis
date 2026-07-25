@@ -43,6 +43,9 @@ interface LessonGroup {
 
 const PAGE_SIZE = 1000;
 const SUPABASE_TABLE = "completed_lessons";
+// How many active user_ids to pack into one completed_lessons `user_id=in.(…)`
+// request. 50 UUIDs keeps the URL ~2 KB, well under any gateway length limit.
+const USER_ID_CHUNK = 50;
 
 const LessonCard: React.FC<{
   lesson: CompletedLesson;
@@ -195,39 +198,14 @@ const CompletedLessons: React.FC = () => {
       setError(null);
 
       try {
-        // Fetch completed lessons
-        let allLessons: CompletedLesson[] = [];
+        // 1. Resolve the active-user set from the *authoritative* status:
+        //    user_info.payment_status (the user's current subscription state).
+        //    We deliberately do NOT filter completed_lessons.payment_status —
+        //    that column is a snapshot taken at completion time and is null for
+        //    ~87% of rows, so filtering on it silently drops recent completions.
+        let allUsers: UserInfo[] = [];
         let lastId = 0;
         let hasMore = true;
-
-        while (hasMore) {
-          const { data, error } = await supabase
-            .from(SUPABASE_TABLE)
-            .select(
-              `id, created_at, user_id, lesson_id, conversation_transcript,
-               phrase_feedback, user_improvement_feedback, user_rating_feedback,
-               ended_early, payment_status, word_timeline`,
-            )
-            .in("payment_status", ["ACTIVE", "TRIAL"])
-            .gt("id", lastId)
-            .order("id", { ascending: true })
-            .limit(PAGE_SIZE);
-
-          if (error) throw new Error(error.message);
-
-          if (data && data.length > 0) {
-            allLessons = [...allLessons, ...data];
-            lastId = data[data.length - 1].id;
-            hasMore = data.length === PAGE_SIZE;
-          } else {
-            hasMore = false;
-          }
-        }
-
-        // Fetch user_info for ACTIVE/TRIAL users
-        let allUsers: UserInfo[] = [];
-        lastId = 0;
-        hasMore = true;
 
         while (hasMore) {
           const { data, error } = await supabase
@@ -256,6 +234,42 @@ const CompletedLessons: React.FC = () => {
         allUsers.forEach((u) => {
           if (!map.has(u.user_id)) map.set(u.user_id, u);
         });
+        const activeUserIds = Array.from(map.keys());
+
+        // 2. Fetch completed lessons for exactly those users. user_id is not a
+        //    PostgREST foreign key to user_info, so an embedded join-filter
+        //    isn't available — instead we batch the active user_ids into
+        //    in() chunks and keyset-paginate within each chunk.
+        let allLessons: CompletedLesson[] = [];
+        for (let i = 0; i < activeUserIds.length; i += USER_ID_CHUNK) {
+          const batch = activeUserIds.slice(i, i + USER_ID_CHUNK);
+          lastId = 0;
+          hasMore = true;
+
+          while (hasMore) {
+            const { data, error } = await supabase
+              .from(SUPABASE_TABLE)
+              .select(
+                `id, created_at, user_id, lesson_id, conversation_transcript,
+                 phrase_feedback, user_improvement_feedback, user_rating_feedback,
+                 ended_early, payment_status, word_timeline`,
+              )
+              .in("user_id", batch)
+              .gt("id", lastId)
+              .order("id", { ascending: true })
+              .limit(PAGE_SIZE);
+
+            if (error) throw new Error(error.message);
+
+            if (data && data.length > 0) {
+              allLessons = [...allLessons, ...data];
+              lastId = data[data.length - 1].id;
+              hasMore = data.length === PAGE_SIZE;
+            } else {
+              hasMore = false;
+            }
+          }
+        }
 
         setLessons(allLessons);
         setUserMap(map);

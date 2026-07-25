@@ -48,6 +48,7 @@ interface ActiveUser {
   age: number | null;
   gender: string | null;
   native_language: string | null;
+  learning_language: string | null;
   tutor: string | null;
   daily_streak: number;
   last_logged_in: string | null;
@@ -66,6 +67,16 @@ function formatDate(iso: string | null | undefined): string {
 }
 
 const SUPABASE_TABLE_NAME = "user_info";
+
+// native_language / learning_language are stored as lowercase codes
+// ("english", "spanish", "brazilian portuguese"). Titlecase for display.
+function prettyLang(code: string | null): string {
+  if (!code || !code.trim()) return "Unknown";
+  return code
+    .split(/[\s_-]+/)
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
 
 const COLORS = [
   "#6366f1", "#06b6d4", "#f59e0b", "#ef4444", "#8b5cf6",
@@ -179,6 +190,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
               age,
               gender,
               native_language,
+              learning_language,
               tutor,
               daily_streak,
               last_logged_in,
@@ -438,6 +450,11 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     [filteredUsers],
   );
 
+  const learningLanguageDistribution = useMemo(
+    () => buildDistribution(filteredUsers, (u) => prettyLang(u.learning_language)),
+    [filteredUsers],
+  );
+
   const attributionDistribution = useMemo(
     () => buildDistribution(filteredUsers, (u) => u.attribution || "Unknown"),
     [filteredUsers],
@@ -566,7 +583,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const total = filteredUsers.length;
 
   // ── Grid layout (drag + resize) ─────────────────
-  const LAYOUT_STORAGE_KEY = "versa-dashboard-chart-layouts-v2";
+  const LAYOUT_STORAGE_KEY = "versa-dashboard-chart-layouts-v3";
 
   const defaultLayouts: { lg: Layout[] } = {
     lg: [
@@ -575,11 +592,12 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       { i: "gender", x: 8, y: 0, w: 4, h: 4, minW: 3, minH: 3 },
       { i: "age", x: 0, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
       { i: "language", x: 4, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "attribution", x: 8, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "tutor", x: 0, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "demand", x: 4, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "lessonCount", x: 8, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
-      { i: "lessonDays", x: 0, y: 12, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "learningLanguage", x: 8, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "attribution", x: 0, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "tutor", x: 4, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "demand", x: 8, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "lessonCount", x: 0, y: 12, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "lessonDays", x: 4, y: 12, w: 4, h: 4, minW: 3, minH: 3 },
     ],
   };
 
@@ -906,6 +924,13 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
             <h3 className="chart-drag-handle">Native Language</h3>
             <div style={{ flex: 1, minHeight: 0 }}>
               <PieChartInner data={languageDistribution.slice(0, 8)} total={total} renderPieLabel={renderPieLabel} />
+            </div>
+          </div>
+
+          <div key="learningLanguage" className="chart-container">
+            <h3 className="chart-drag-handle">Learning Language</h3>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <PieChartInner data={learningLanguageDistribution.slice(0, 8)} total={total} renderPieLabel={renderPieLabel} />
             </div>
           </div>
 

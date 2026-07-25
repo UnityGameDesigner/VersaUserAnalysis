@@ -430,6 +430,110 @@ body,
 }
 
 /* ============================
+   Transcript selection + CSV export
+   ============================ */
+
+.tx-select-all-btn {
+  margin-left: 0.6rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #4f46e5;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 150ms, background 150ms;
+}
+
+.tx-select-all-btn:hover:not(:disabled) {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+}
+
+.tx-select-all-btn:disabled {
+  color: #9ca3af;
+  cursor: default;
+}
+
+.lesson-card-select {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #6366f1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.lesson-card--selected {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px #6366f1;
+}
+
+.tx-select-bar {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
+  background: #111827;
+  color: #e5e7eb;
+  box-shadow: 0 10px 25px rgba(17, 24, 39, 0.35);
+  z-index: 60;
+}
+
+.tx-select-bar-count {
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  padding-right: 0.25rem;
+}
+
+.tx-select-bar-count strong {
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.tx-select-bar-btn {
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid #374151;
+  background: transparent;
+  color: #e5e7eb;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 150ms, border-color 150ms;
+}
+
+.tx-select-bar-btn:hover:not(:disabled) {
+  background: #1f2937;
+  border-color: #4b5563;
+}
+
+.tx-select-bar-btn--primary {
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #ffffff;
+}
+
+.tx-select-bar-btn--primary:hover:not(:disabled) {
+  background: #4f46e5;
+  border-color: #4f46e5;
+}
+
+.tx-select-bar-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ============================
    Header (legacy, used in loading/error states)
    ============================ */
 
@@ -1411,6 +1515,39 @@ body,
   cursor: help;
 }
 
+.lesson-card-badge--turns {
+  background: #f5f3ff;
+  color: #6d28d9;
+  cursor: help;
+}
+
+/* exit_phase / exit_trigger badges. Severity-coded: `bad` is our failure
+   (never connected, connection/startup error), `warn` is a learner drop-off,
+   `good` is a clean finish, `neutral` carries no judgement. */
+.lesson-card-badge--exit-bad {
+  background: #fee2e2;
+  color: #b91c1c;
+  cursor: help;
+}
+
+.lesson-card-badge--exit-warn {
+  background: #ffedd5;
+  color: #c2410c;
+  cursor: help;
+}
+
+.lesson-card-badge--exit-good {
+  background: #dcfce7;
+  color: #15803d;
+  cursor: help;
+}
+
+.lesson-card-badge--exit-neutral {
+  background: #f1f5f9;
+  color: #475569;
+  cursor: help;
+}
+
 /* ── Retention tab ───── */
 .ret-header {
   margin-bottom: 1rem;
@@ -1432,6 +1569,25 @@ body,
   font-size: 0.78rem;
   color: #9ca3af;
   margin: 0.1rem 0 0.75rem;
+}
+
+/* Recent Users tab — responsive grid of demographic breakdown charts */
+.recent-breakdowns-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+.recent-more {
+  font-size: 0.72rem;
+  color: #9ca3af;
+  margin: 0.4rem 0 0;
+}
+.recent-empty-mini {
+  font-size: 0.8rem;
+  color: #9ca3af;
+  padding: 1rem 0;
+  margin: 0;
 }
 .ret-chart-note {
   font-size: 0.75rem;
@@ -1604,6 +1760,17 @@ body,
 .user-tier-badge--silver { background: #e9ebef; color: #545a66; }
 .user-tier-badge--gold { background: #fbeec4; color: #876a10; }
 .user-tier-badge--platinum { background: #e4e8f6; color: #444f8c; }
+
+.user-platform-badge {
+  display: inline-flex;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.user-platform-badge--ios { background: #e9ebef; color: #1f2937; }
+.user-platform-badge--android { background: #dcf5e4; color: #1b7a43; }
 
 .user-panel-grid {
   display: grid;
@@ -1797,6 +1964,105 @@ body,
   background: #fefce8;
 }
 
+/* ── Feedback tab ───────────── */
+
+.fb-card .fb-body {
+  padding: 0.85rem 1rem;
+  background: #fefce8;
+  border-top: 1px solid #f3f4f6;
+}
+
+.fb-text {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #1a1a2e;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fb-text--pending {
+  color: #9ca3af;
+}
+
+.fb-original {
+  margin: 0.5rem 0 0;
+  padding-top: 0.5rem;
+  border-top: 1px dashed #e5e7eb;
+  font-size: 0.8125rem;
+  font-style: italic;
+  color: #6b7280;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fb-original-label {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9ca3af;
+  margin-right: 0.4rem;
+}
+
+.fb-translating {
+  display: inline-block;
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.fb-lang-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #0369a1;
+  background: #e0f2fe;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+}
+
+.fb-empty-convo {
+  color: #9ca3af;
+  font-size: 0.8125rem;
+  font-style: italic;
+}
+
+.fb-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.fb-progress-bar {
+  flex: 1;
+  height: 6px;
+  background: #eef2ff;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.fb-progress-fill {
+  height: 100%;
+  background: #6366f1;
+  border-radius: 999px;
+  transition: width 200ms ease;
+}
+
+.fb-progress-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6366f1;
+  white-space: nowrap;
+}
+
+/* The "show/hide originals" control is a button styled like a filter chip. */
+.fb-toggle {
+  cursor: pointer;
+  font-family: inherit;
+}
+
 /* ============================
    User Lookup
    ============================ */
@@ -1879,6 +2145,38 @@ body,
   color: #9ca3af;
   font-family: "SF Mono", "Fira Code", monospace;
   margin: 0.35rem 0 0;
+}
+
+/* Sits at the far end of the profile header, opposite the name/plan pill. */
+.lookup-export-btn {
+  margin-left: auto;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid #6366f1;
+  background: #6366f1;
+  color: #ffffff;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 150ms, border-color 150ms;
+}
+
+.lookup-export-btn:hover:not(:disabled) {
+  background: #4f46e5;
+  border-color: #4f46e5;
+}
+
+.lookup-export-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.lookup-export-error {
+  font-size: 0.8125rem;
+  color: #dc2626;
+  margin: 0.5rem 0 0;
 }
 
 .lookup-metrics {
@@ -2097,6 +2395,278 @@ body,
   background: #fefce8;
   border-radius: 8px;
   line-height: 1.5;
+}
+
+/* ============================
+   Tutor Evaluation (Claude-graded)
+   ============================ */
+
+.transcript-toggle--eval {
+  color: #7c3aed;
+}
+
+.transcript-toggle--eval:hover {
+  background: #f5f3ff;
+  border-color: #7c3aed;
+}
+
+.transcript-toggle--eval:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.eval-panel {
+  margin-top: 0.75rem;
+  background: #faf9ff;
+  border: 1px solid #e5e1f8;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+.eval-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+/* When collapsed, the header is the panel's only content — drop its bottom
+   margin so the score sits flush without trailing whitespace. */
+.eval-panel--collapsed .eval-header {
+  margin-bottom: 0;
+}
+
+.eval-detail-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.eval-score {
+  font-size: 1.05rem;
+  font-weight: 700;
+  padding: 0.25rem 0.65rem;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.eval-score--good,
+.eval-dim-score--good { background: #dcfce7; color: #15803d; }
+.eval-score--mid,
+.eval-dim-score--mid { background: #fef9c3; color: #a16207; }
+.eval-score--bad,
+.eval-dim-score--bad { background: #fee2e2; color: #b91c1c; }
+
+.eval-verdict {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #1a1a2e;
+  line-height: 1.45;
+}
+
+.eval-dimensions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 0.85rem;
+}
+
+.eval-dim {
+  background: #ffffff;
+  border: 1px solid #ece9f9;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+}
+
+.eval-dim-score {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  margin-right: 0.45rem;
+}
+
+.eval-dim-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.eval-dim-comment {
+  font-size: 0.75rem;
+  color: #6b7280;
+  line-height: 1.45;
+  margin: 0.4rem 0 0;
+}
+
+.eval-section {
+  margin-top: 0.65rem;
+}
+
+.eval-section-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+}
+
+.eval-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.eval-list li {
+  font-size: 0.8125rem;
+  color: #374151;
+  line-height: 1.5;
+}
+
+.eval-list--issues li::marker {
+  color: #b91c1c;
+}
+
+.eval-moment {
+  border-left: 3px solid #d1d5db;
+  padding: 0.15rem 0 0.15rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.eval-moment--good { border-left-color: #22c55e; }
+.eval-moment--bad { border-left-color: #ef4444; }
+
+.eval-moment-quote {
+  font-size: 0.8125rem;
+  font-style: italic;
+  color: #1a1a2e;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.eval-moment-comment {
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin: 0.2rem 0 0;
+  line-height: 1.45;
+}
+
+.eval-error {
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  color: #b91c1c;
+}
+
+/* Evaluations tab */
+.eval-evaluated-at {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+.transcript-toggle--danger {
+  color: #b91c1c;
+  margin-left: 0;
+}
+
+.transcript-toggle--danger:hover {
+  background: #fef2f2;
+  border-color: #b91c1c;
+}
+
+/* ============================
+   Saved transcripts + note editor
+   ============================ */
+
+/* "Save" sits at the right end of the header; the bookmark/note buttons that
+   follow it should butt up against it rather than each grabbing margin-auto. */
+.transcript-toggle--save {
+  color: #d97706;
+}
+
+.transcript-toggle--save:hover {
+  background: #fffbeb;
+  border-color: #d97706;
+}
+
+.transcript-toggle--saved {
+  background: #fffbeb;
+  border-color: #f59e0b;
+  color: #b45309;
+}
+
+.transcript-toggle--saved:hover {
+  background: #fef3c7;
+  border-color: #d97706;
+}
+
+/* Keep the trailing header buttons grouped: only the first margin-left:auto
+   element pushes right, the rest follow with a small gap. */
+.lesson-card-header .transcript-toggle + .transcript-toggle {
+  margin-left: 0.4rem;
+}
+
+.tx-note {
+  margin: 0.75rem 1rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.tx-note-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #b45309;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tx-note-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  background: #fffdf7;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #1a1a2e;
+  resize: vertical;
+  transition: border-color 100ms, box-shadow 100ms;
+}
+
+.tx-note-input::placeholder {
+  color: #b8a06b;
+}
+
+.tx-note-input:focus {
+  outline: none;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+}
+
+/* Snapshot stat row on a Saved → Profiles card */
+.saved-profile-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin: 0.5rem 1rem 0;
+  font-size: 0.8125rem;
+  color: #6b7280;
+}
+
+.saved-profile-stat strong {
+  color: #1a1a2e;
+  font-weight: 600;
 }
 
 /* ── Responsive ────────────── */

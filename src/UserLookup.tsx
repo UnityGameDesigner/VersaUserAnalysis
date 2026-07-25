@@ -1,6 +1,22 @@
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./lib/supabase";
 import { translateText } from "./lib/translate";
+import { parseTranscript } from "./lib/lessonMetrics";
+import { exportTranscriptsZip } from "./lib/exportTranscripts";
+import {
+  getSavedTranscript,
+  isSaved as isTranscriptSaved,
+  saveTranscript,
+  updateNote,
+  deleteSavedTranscript,
+} from "./lib/savedStore";
+import {
+  getSavedProfile,
+  isProfileSaved,
+  saveProfile,
+  updateProfileNote,
+  deleteSavedProfile,
+} from "./lib/savedProfilesStore";
 import { format } from "date-fns";
 
 interface UserInfo {
@@ -9,6 +25,8 @@ interface UserInfo {
   age: number | null;
   gender: string | null;
   native_language: string | null;
+  learning_language: string | null;
+  level: string | null;
   tutor: string | null;
   daily_streak: number;
   last_logged_in: string | null;
@@ -29,37 +47,49 @@ interface CompletedLesson {
   user_rating_feedback: number | null;
   ended_early: boolean | null;
   payment_status: string;
+  word_timeline: unknown;
 }
 
-interface TranscriptMessage {
-  role: string;
-  text: string;
-}
-
-function parseTranscript(raw: unknown): TranscriptMessage[] {
-  if (!raw) return [];
-  try {
-    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter(
-        (m: unknown): m is { role: string; text: string } =>
-          typeof m === "object" &&
-          m !== null &&
-          "text" in m &&
-          typeof (m as Record<string, unknown>).text === "string",
-      )
-      .filter((m) => m.role !== "ack")
-      .map((m) => ({ role: m.role ?? "unknown", text: m.text }));
-  } catch {
-    return [];
-  }
-}
-
-const LessonCard: React.FC<{ lesson: CompletedLesson }> = ({ lesson: c }) => {
+const LessonCard: React.FC<{ lesson: CompletedLesson; userName: string | null }> = ({ lesson: c, userName }) => {
   const [open, setOpen] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
   const messages = parseTranscript(c.conversation_transcript);
+
+  // Bookmark state for the Saved tab, seeded from localStorage so a save (and
+  // its note) survives refreshes. Mirrors the All Transcripts card, writing to
+  // the same store so anything saved here shows up under Saved → Conversations.
+  const [saved, setSaved] = useState(() => isTranscriptSaved(c.id));
+  const [note, setNote] = useState(() => getSavedTranscript(c.id)?.note ?? "");
+  const [noteOpen, setNoteOpen] = useState(false);
+
+  const toggleSaved = () => {
+    if (saved) {
+      deleteSavedTranscript(c.id);
+      setSaved(false);
+      setNoteOpen(false);
+      return;
+    }
+    saveTranscript({
+      rowId: c.id,
+      userId: c.user_id,
+      lessonId: c.lesson_id,
+      lessonDate: c.created_at,
+      savedAt: new Date().toISOString(),
+      userName,
+      endedEarly: Boolean(c.ended_early),
+      rating: c.user_rating_feedback ?? null,
+      turnCount: messages.length,
+      note,
+    });
+    setSaved(true);
+    setNoteOpen(true); // reveal the note field so a note can be added right away
+  };
+
+  // Live-persist note edits to the already-saved record.
+  const handleNoteChange = (value: string) => {
+    setNote(value);
+    updateNote(c.id, value);
+  };
 
   // Per-message translations of the conversation, indexed to match `messages`.
   const [convTranslations, setConvTranslations] = useState<string[] | null>(null);
@@ -126,7 +156,39 @@ const LessonCard: React.FC<{ lesson: CompletedLesson }> = ({ lesson: c }) => {
             {copiedText ? "Copied!" : "Copy Transcript"}
           </button>
         )}
+        <button
+          className={`transcript-toggle transcript-toggle--save${saved ? " transcript-toggle--saved" : ""}`}
+          onClick={toggleSaved}
+          title={saved ? "Remove from the Saved tab" : "Save this conversation to the Saved tab"}
+        >
+          {saved ? "🔖 Saved" : "🔖 Save"}
+        </button>
+        {saved && (
+          <button
+            className="transcript-toggle"
+            onClick={() => setNoteOpen((v) => !v)}
+            title="Add or edit a note for this saved conversation"
+          >
+            {noteOpen ? "Hide Note" : note.trim() ? "Edit Note" : "Add Note"}
+          </button>
+        )}
       </div>
+
+      {saved && noteOpen && (
+        <div className="tx-note">
+          <label className="tx-note-label" htmlFor={`lookup-note-${c.id}`}>
+            Note
+          </label>
+          <textarea
+            id={`lookup-note-${c.id}`}
+            className="tx-note-input"
+            value={note}
+            onChange={(e) => handleNoteChange(e.target.value)}
+            placeholder="Why did you save this? (e.g. great correction example, tutor went off-script…)"
+            rows={2}
+          />
+        </div>
+      )}
 
       {open && messages.length > 0 && (
         <div className="transcript-chat">
@@ -181,6 +243,14 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  // Bookmark state for the profile itself (Saved → Profiles). Synced to the
+  // saved-profiles store whenever a different user is loaded.
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [profileNote, setProfileNote] = useState("");
+  const [profileNoteOpen, setProfileNoteOpen] = useState(false);
 
   const handleLookup = async (overrideId?: string) => {
     const trimmed = (overrideId ?? inputId).trim();
@@ -198,8 +268,8 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
         .from("user_info")
         .select(
           `user_id, preferred_name, age, gender, native_language,
-           tutor, daily_streak, last_logged_in, time_zone, attribution,
-           demand_tier, payment_status`,
+           learning_language, level, tutor, daily_streak, last_logged_in,
+           time_zone, attribution, demand_tier, payment_status`,
         )
         .eq("user_id", trimmed)
         .limit(1)
@@ -219,7 +289,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           .select(
             `id, created_at, user_id, lesson_id, conversation_transcript,
              phrase_feedback, user_improvement_feedback, user_rating_feedback,
-             ended_early, payment_status`,
+             ended_early, payment_status, word_timeline`,
           )
           .eq("user_id", trimmed)
           .gt("id", lastId)
@@ -259,6 +329,31 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
     }
   }, [initialUserId]);
 
+  // Lessons with an empty conversation would export as a header-only CSV, so
+  // only the ones that actually hold a transcript are exportable.
+  const exportableLessons = lessons.filter(
+    (l) => parseTranscript(l.conversation_transcript).length > 0,
+  );
+
+  const handleExportAll = async () => {
+    if (!user || exporting || exportableLessons.length === 0) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      await exportTranscriptsZip(
+        exportableLessons,
+        new Map([[user.user_id, user]]),
+        user.preferred_name || user.user_id.slice(0, 8),
+      );
+    } catch (e) {
+      setExportError(
+        `Export failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const ratedLessons = lessons.filter((l) => l.user_rating_feedback != null);
   const avgRating =
     ratedLessons.length > 0
@@ -266,6 +361,51 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
         ratedLessons.length
       : null;
   const earlyCount = lessons.filter((l) => l.ended_early).length;
+
+  // Re-seed the profile bookmark state whenever a new user is loaded (the same
+  // mount can look up several users in a row).
+  useEffect(() => {
+    if (!user) return;
+    setProfileSaved(isProfileSaved(user.user_id));
+    setProfileNote(getSavedProfile(user.user_id)?.note ?? "");
+    setProfileNoteOpen(false);
+  }, [user]);
+
+  // Bookmark / un-bookmark this profile for the Saved → Profiles view. Saving
+  // captures a snapshot of the stats the profile card shows; the live profile is
+  // re-fetched by user_id when reopened from the Saved tab.
+  const toggleProfileSaved = () => {
+    if (!user) return;
+    if (profileSaved) {
+      deleteSavedProfile(user.user_id);
+      setProfileSaved(false);
+      setProfileNoteOpen(false);
+      return;
+    }
+    saveProfile({
+      userId: user.user_id,
+      savedAt: new Date().toISOString(),
+      userName: user.preferred_name ?? null,
+      paymentStatus: user.payment_status ?? null,
+      dailyStreak: user.daily_streak ?? null,
+      lessonsCount: lessons.length,
+      avgRating,
+      nativeLanguage: user.native_language ?? null,
+      learningLanguage: user.learning_language ?? null,
+      tutor: user.tutor ?? null,
+      demandTier: user.demand_tier ?? null,
+      lastLoggedIn: user.last_logged_in ?? null,
+      note: profileNote,
+    });
+    setProfileSaved(true);
+    setProfileNoteOpen(true);
+  };
+
+  const handleProfileNoteChange = (value: string) => {
+    if (!user) return;
+    setProfileNote(value);
+    updateProfileNote(user.user_id, value);
+  };
 
   return (
     <div className="dashboard-container">
@@ -324,8 +464,56 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 >
                   {user.payment_status}
                 </span>
+                <button
+                  className="lookup-export-btn"
+                  onClick={handleExportAll}
+                  disabled={exporting || exportableLessons.length === 0}
+                  title={
+                    exportableLessons.length === 0
+                      ? "This user has no lessons with a transcript"
+                      : "Download every transcript for this user as CSVs in a .zip"
+                  }
+                >
+                  {exporting
+                    ? "Exporting…"
+                    : `Download All Transcripts (${exportableLessons.length})`}
+                </button>
+                <button
+                  className={`transcript-toggle transcript-toggle--save${profileSaved ? " transcript-toggle--saved" : ""}`}
+                  onClick={toggleProfileSaved}
+                  title={profileSaved ? "Remove from Saved → Profiles" : "Save this profile to the Saved tab"}
+                >
+                  {profileSaved ? "🔖 Profile Saved" : "🔖 Save Profile"}
+                </button>
+                {profileSaved && (
+                  <button
+                    className="transcript-toggle"
+                    onClick={() => setProfileNoteOpen((v) => !v)}
+                    title="Add or edit a note for this saved profile"
+                  >
+                    {profileNoteOpen ? "Hide Note" : profileNote.trim() ? "Edit Note" : "Add Note"}
+                  </button>
+                )}
               </div>
               <p className="lookup-profile-uid">{user.user_id}</p>
+              {exportError && (
+                <p className="lookup-export-error">{exportError}</p>
+              )}
+              {profileSaved && profileNoteOpen && (
+                <div className="tx-note">
+                  <label className="tx-note-label" htmlFor={`lookup-profile-note-${user.user_id}`}>
+                    Note
+                  </label>
+                  <textarea
+                    id={`lookup-profile-note-${user.user_id}`}
+                    className="tx-note-input"
+                    value={profileNote}
+                    onChange={(e) => handleProfileNoteChange(e.target.value)}
+                    placeholder="Why did you save this profile? (e.g. power user, churn risk, great case study…)"
+                    rows={2}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Stats Grid */}
@@ -425,7 +613,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
               ) : (
                 <div className="lessons-cards">
                   {lessons.map((c) => (
-                    <LessonCard key={c.id} lesson={c} />
+                    <LessonCard key={c.id} lesson={c} userName={user.preferred_name} />
                   ))}
                 </div>
               )}
