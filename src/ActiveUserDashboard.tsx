@@ -56,6 +56,7 @@ interface ActiveUser {
   attribution: string | null;
   payment_status: string;
   demand_tier: string | null;
+  reason: string | null;
 }
 
 // Format an ISO timestamp into a short, locale-aware date for table display.
@@ -67,6 +68,12 @@ function formatDate(iso: string | null | undefined): string {
 }
 
 const SUPABASE_TABLE_NAME = "user_info";
+
+// Payment statuses this dashboard loads — the trial funnel and its two
+// outcomes: TRIAL (still deciding), ACTIVE (converted), PAST_DUE (trial ended
+// but payment failed). null / CANCELED are out of scope. Change here to
+// widen/narrow the server fetches.
+const PAYMENT_STATUSES: string[] = ["ACTIVE", "TRIAL", "PAST_DUE"];
 
 // native_language / learning_language are stored as lowercase codes
 // ("english", "spanish", "brazilian portuguese"). Titlecase for display.
@@ -125,6 +132,11 @@ const PieChartInner: React.FC<{
 const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserClick }) => {
   const [users, setUsers] = useState<ActiveUser[]>([]);
   const [rawLessons, setRawLessons] = useState<{ user_id: string; created_at: string }[]>([]);
+  // Per-user engagement (lessons completed + total user turns within them),
+  // aggregated server-side by the engagement_by_user RPC. null until it
+  // resolves; empty map (with engagementError set) if the RPC isn't installed.
+  const [engagementMap, setEngagementMap] = useState<Map<string, { lessons: number; turns: number }> | null>(null);
+  const [engagementError, setEngagementError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
   // Measure container width for grid layout
@@ -155,9 +167,11 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const [sortBy, setSortBy] = useState<string>("lastLoggedIn");
   const mapTooltipRef = React.useRef<HTMLDivElement>(null);
 
-  // Fetch only ACTIVE users. The user_info table holds ~163k rows, but ~99.7%
-  // have a null payment_status and only ~421 are ACTIVE — loading the whole
-  // table just to show active users stalls the page, so we filter server-side.
+  // Fetch ACTIVE + TRIAL users. The user_info table holds ~230k rows, but the
+  // vast majority have a null payment_status; only ~467 are ACTIVE and ~110
+  // TRIAL — loading the whole table stalls the page, so we filter to those two
+  // paying/converting cohorts server-side. The Status filter + "Payment Status"
+  // sort let you split active vs trial within the loaded set.
   useEffect(() => {
     const fetchUsers = async () => {
       setLoading(true);
@@ -167,12 +181,12 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
         const { count: totalCount, error: countError } = await supabase
           .from(SUPABASE_TABLE_NAME)
           .select("id", { count: "exact", head: true })
-          .eq("payment_status", "ACTIVE");
+          .in("payment_status", PAYMENT_STATUSES);
 
         if (countError) {
           console.error("Count query error:", countError);
         } else {
-          console.log("Server reports total ACTIVE rows:", totalCount);
+          console.log("Server reports total ACTIVE+TRIAL rows:", totalCount);
         }
 
         const PAGE_SIZE = 1000;
@@ -197,9 +211,10 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
               time_zone,
               attribution,
               payment_status,
-              demand_tier
+              demand_tier,
+              reason
             `)
-            .eq("payment_status", "ACTIVE")
+            .in("payment_status", PAYMENT_STATUSES)
             .gt("id", lastId)
             .order("id", { ascending: true })
             .limit(PAGE_SIZE);
@@ -233,33 +248,64 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
         console.log(`Fetched ${allData.length} total rows, ${deduped.length} unique users`);
         setUsers(deduped);
 
-        // Fetch completed lessons (only user_id + created_at) for engagement
-        // charts, scoped to ACTIVE so we don't page the entire lessons table.
+        // Fetch completed lessons (id + user_id + created_at) for engagement
+        // charts, keyed BY USER rather than by the lesson's payment_status.
+        // That snapshot is null on EVERY trial user's lessons (and on active
+        // users' pre-conversion lessons), so filtering by it silently drops all
+        // trial engagement — Days Used, First Lesson, the lesson charts. We page
+        // by user_id membership instead, chunked to keep request URLs short.
+        const lessonUserIds = deduped.map((u) => u.user_id);
         let allLessons: { id: number; user_id: string; created_at: string }[] = [];
-        lastId = 0;
-        hasMore = true;
+        const USER_CHUNK = 100;
+        for (let i = 0; i < lessonUserIds.length; i += USER_CHUNK) {
+          const chunk = lessonUserIds.slice(i, i + USER_CHUNK);
+          lastId = 0;
+          hasMore = true;
+          while (hasMore) {
+            const { data, error } = await supabase
+              .from("completed_lessons")
+              .select("id, user_id, created_at")
+              .in("user_id", chunk)
+              .gt("id", lastId)
+              .order("id", { ascending: true })
+              .limit(PAGE_SIZE);
 
-        while (hasMore) {
-          const { data, error } = await supabase
-            .from("completed_lessons")
-            .select("id, user_id, created_at")
-            .eq("payment_status", "ACTIVE")
-            .gt("id", lastId)
-            .order("id", { ascending: true })
-            .limit(PAGE_SIZE);
+            if (error) throw new Error(error.message);
 
-          if (error) throw new Error(error.message);
-
-          if (data && data.length > 0) {
-            allLessons = [...allLessons, ...data];
-            lastId = data[data.length - 1].id;
-            hasMore = data.length === PAGE_SIZE;
-          } else {
-            hasMore = false;
+            if (data && data.length > 0) {
+              allLessons = [...allLessons, ...data];
+              lastId = data[data.length - 1].id;
+              hasMore = data.length === PAGE_SIZE;
+            } else {
+              hasMore = false;
+            }
           }
         }
 
         setRawLessons(allLessons.map((l) => ({ user_id: l.user_id, created_at: l.created_at })));
+
+        // Per-user engagement (lessons + user turns), aggregated server-side.
+        // Non-fatal: if the engagement_by_user function isn't installed yet the
+        // rest of the dashboard still works and the column shows "—".
+        const { data: engRows, error: engErr } = await supabase.rpc(
+          "engagement_by_user",
+          { statuses: PAYMENT_STATUSES },
+        );
+        if (engErr) {
+          console.warn(
+            "engagement_by_user RPC unavailable — engagement column will be blank. " +
+              "Apply supabase/sql/engagement_by_user.sql. Error:",
+            engErr.message,
+          );
+          setEngagementError(engErr.message);
+          setEngagementMap(new Map());
+        } else {
+          const map = new Map<string, { lessons: number; turns: number }>();
+          (engRows as { user_id: string; lessons: number; turns: number }[] | null)?.forEach(
+            (r) => map.set(r.user_id, { lessons: Number(r.lessons), turns: Number(r.turns) }),
+          );
+          setEngagementMap(map);
+        }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Unknown error";
         console.error("Fetch Error:", e);
@@ -340,31 +386,49 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     return ["All", ...Array.from(set).sort()];
   }, [users]);
 
-  const availableStatuses = useMemo(() => {
-    const set = new Set<string>();
-    users.forEach((u) => { if (u.payment_status) set.add(u.payment_status); });
-    return ["All", ...Array.from(set).sort()];
-  }, [users]);
-
   const availableGenders = useMemo(() => {
     const set = new Set<string>();
     users.forEach((u) => set.add(u.gender || "Unknown"));
     return ["All", ...Array.from(set).sort()];
   }, [users]);
 
-  const filteredUsers = useMemo(() => {
+  // Everything EXCEPT the Active/Trial cohort toggle. The cohort segment at the
+  // top narrows this to a single payment_status; keeping this pre-status set
+  // separate lets each cohort's size show on the segment regardless of which
+  // one is currently selected.
+  const usersBeforeStatus = useMemo(() => {
     return users.filter((u) => {
       if (selectedCountry !== "All" && getCountryFromTimezone(u.time_zone) !== selectedCountry) return false;
       if (selectedAttribution !== "All" && (u.attribution || "Unknown") !== selectedAttribution) return false;
       if (selectedTutor !== "All" && (u.tutor || "Unknown") !== selectedTutor) return false;
       if (selectedAgeBucket !== "All" && getAgeBucket(u.age) !== selectedAgeBucket) return false;
       if (selectedDemandTier !== "All" && u.demand_tier !== selectedDemandTier) return false;
-      if (selectedStatus !== "All" && u.payment_status !== selectedStatus) return false;
       if (selectedLanguage !== "All" && (u.native_language || "Unknown") !== selectedLanguage) return false;
       if (selectedGender !== "All" && (u.gender || "Unknown") !== selectedGender) return false;
       return true;
     });
-  }, [users, selectedCountry, selectedAttribution, selectedTutor, selectedAgeBucket, selectedDemandTier, selectedStatus, selectedLanguage, selectedGender]);
+  }, [users, selectedCountry, selectedAttribution, selectedTutor, selectedAgeBucket, selectedDemandTier, selectedLanguage, selectedGender]);
+
+  // The cohort toggle scopes the ENTIRE dashboard (metrics, charts, table).
+  const filteredUsers = useMemo(
+    () =>
+      selectedStatus === "All"
+        ? usersBeforeStatus
+        : usersBeforeStatus.filter((u) => u.payment_status === selectedStatus),
+    [usersBeforeStatus, selectedStatus],
+  );
+
+  // Cohort sizes for the top segment control — respect every other active
+  // filter, but not the status toggle itself.
+  const cohortCounts = useMemo(
+    () => ({
+      all: usersBeforeStatus.length,
+      active: usersBeforeStatus.filter((u) => u.payment_status === "ACTIVE").length,
+      trial: usersBeforeStatus.filter((u) => u.payment_status === "TRIAL").length,
+      pastDue: usersBeforeStatus.filter((u) => u.payment_status === "PAST_DUE").length,
+    }),
+    [usersBeforeStatus],
+  );
 
   // ── First lesson completed map (user_id → earliest created_at) ──
   const firstLessonMap = useMemo(() => {
@@ -376,6 +440,21 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       }
     });
     return map;
+  }, [rawLessons]);
+
+  // ── Unique days used (user_id → count of distinct calendar dates on which
+  // the user completed at least one lesson) ──. "Used the app" = completed a
+  // lesson that day; days are the UTC date of created_at, matching the
+  // "Days Active" engagement chart.
+  const uniqueDaysMap = useMemo(() => {
+    const days = new Map<string, Set<string>>();
+    rawLessons.forEach((l) => {
+      if (!days.has(l.user_id)) days.set(l.user_id, new Set());
+      days.get(l.user_id)!.add(l.created_at.slice(0, 10));
+    });
+    const counts = new Map<string, number>();
+    days.forEach((set, uid) => counts.set(uid, set.size));
+    return counts;
   }, [rawLessons]);
 
   // ── Sorted users ──
@@ -417,6 +496,40 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       case "streak":
         sorted.sort((a, b) => b.daily_streak - a.daily_streak);
         break;
+      case "uniqueDays":
+        sorted.sort((a, b) => {
+          const aDays = uniqueDaysMap.get(a.user_id) ?? 0;
+          const bDays = uniqueDaysMap.get(b.user_id) ?? 0;
+          return bDays - aDays;
+        });
+        break;
+      case "status":
+        // Group by payment status (Active, then Trial, then Past Due), newest
+        // login first within each group.
+        sorted.sort((a, b) => {
+          const rank = (s: string | null) =>
+            s === "ACTIVE" ? 0 : s === "TRIAL" ? 1 : s === "PAST_DUE" ? 2 : 3;
+          const byStatus = rank(a.payment_status) - rank(b.payment_status);
+          if (byStatus !== 0) return byStatus;
+          const aTime = a.last_logged_in ? new Date(a.last_logged_in).getTime() : 0;
+          const bTime = b.last_logged_in ? new Date(b.last_logged_in).getTime() : 0;
+          return bTime - aTime;
+        });
+        break;
+      case "engagement":
+        // Most engaged first = most user turns across completed lessons.
+        // Total turns already blends volume (lessons) with depth (turns/lesson),
+        // so start-and-bail lessons (~0 turns) barely move it. Ties broken by
+        // lessons completed.
+        sorted.sort((a, b) => {
+          const ae = engagementMap?.get(a.user_id);
+          const be = engagementMap?.get(b.user_id);
+          const at = ae?.turns ?? -1;
+          const bt = be?.turns ?? -1;
+          if (bt !== at) return bt - at;
+          return (be?.lessons ?? 0) - (ae?.lessons ?? 0);
+        });
+        break;
       case "age":
         sorted.sort((a, b) => {
           const aAge = a.age === null || a.age === -1 ? Infinity : a.age;
@@ -428,7 +541,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
         break;
     }
     return sorted;
-  }, [filteredUsers, sortBy, firstLessonMap]);
+  }, [filteredUsers, sortBy, firstLessonMap, uniqueDaysMap, engagementMap]);
 
   // ── Computed Data (all based on filteredUsers) ────
   const activeCount = useMemo(
@@ -437,6 +550,10 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   );
   const trialCount = useMemo(
     () => filteredUsers.filter((u) => u.payment_status === "TRIAL").length,
+    [filteredUsers],
+  );
+  const pastDueCount = useMemo(
+    () => filteredUsers.filter((u) => u.payment_status === "PAST_DUE").length,
     [filteredUsers],
   );
 
@@ -454,6 +571,25 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     () => buildDistribution(filteredUsers, (u) => prettyLang(u.learning_language)),
     [filteredUsers],
   );
+
+  // reason is a MULTI-SELECT field stored as comma-separated tags
+  // ("Career opportunities,Traveling,Personal interest"). Split so each tag is
+  // counted once, and drop the "Not specified" / empty sentinel that ~93% of
+  // users leave unset — otherwise it dwarfs every real answer. Counts are per
+  // tag, so they sum to more than the user count (a user can pick several).
+  const reasonDistribution = useMemo(() => {
+    const map = new Map<string, number>();
+    filteredUsers.forEach((u) => {
+      (u.reason ?? "")
+        .split(",")
+        .map((r) => r.trim())
+        .filter((r) => r && r.toLowerCase() !== "not specified")
+        .forEach((r) => map.set(r, (map.get(r) || 0) + 1));
+    });
+    return Array.from(map.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [filteredUsers]);
 
   const attributionDistribution = useMemo(
     () => buildDistribution(filteredUsers, (u) => u.attribution || "Unknown"),
@@ -583,7 +719,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const total = filteredUsers.length;
 
   // ── Grid layout (drag + resize) ─────────────────
-  const LAYOUT_STORAGE_KEY = "versa-dashboard-chart-layouts-v3";
+  const LAYOUT_STORAGE_KEY = "versa-dashboard-chart-layouts-v4";
 
   const defaultLayouts: { lg: Layout[] } = {
     lg: [
@@ -598,6 +734,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       { i: "demand", x: 8, y: 8, w: 4, h: 4, minW: 3, minH: 3 },
       { i: "lessonCount", x: 0, y: 12, w: 4, h: 4, minW: 3, minH: 3 },
       { i: "lessonDays", x: 4, y: 12, w: 4, h: 4, minW: 3, minH: 3 },
+      { i: "reason", x: 8, y: 12, w: 4, h: 4, minW: 3, minH: 3 },
     ],
   };
 
@@ -668,6 +805,36 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   // ── Main dashboard ─────────────────────────────
   return (
     <div className="dashboard-content-area">
+      {/* Cohort segment — the primary control. Scopes every metric, chart,
+          filter and the user table below to Active-only or Trial-only. */}
+      <div className="cohort-bar">
+        <span className="cohort-bar-label">Segment</span>
+        <div className="cohort-seg" role="tablist" aria-label="Payment cohort">
+          {([
+            { key: "All", label: "All Users", count: cohortCounts.all },
+            { key: "ACTIVE", label: "Active", count: cohortCounts.active },
+            { key: "TRIAL", label: "Trial", count: cohortCounts.trial },
+            { key: "PAST_DUE", label: "Past Due", count: cohortCounts.pastDue },
+          ] as const).map((c) => (
+            <button
+              key={c.key}
+              role="tab"
+              aria-selected={selectedStatus === c.key}
+              className={`cohort-seg-btn cohort-seg-btn--${c.key.toLowerCase()}${
+                selectedStatus === c.key ? " cohort-seg-btn--on" : ""
+              }`}
+              onClick={() => setSelectedStatus(c.key)}
+            >
+              <span className="cohort-seg-name">{c.label}</span>
+              <span className="cohort-seg-count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+        <span className="cohort-bar-hint">
+          Everything below reflects this selection.
+        </span>
+      </div>
+
       {/* Filters bar above charts */}
       <section className="filters-bar">
         <div className="filters-bar-inner">
@@ -726,15 +893,6 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           </div>
 
           <div className="filter-dropdown-group">
-            <label htmlFor="status-filter" className="filter-label">Status</label>
-            <select id="status-filter" value={selectedStatus} onChange={(e) => setSelectedStatus(e.target.value)} className="filter-select">
-              {availableStatuses.map((s) => (
-                <option key={s} value={s}>{s === "All" ? "All Statuses" : s}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="filter-dropdown-group">
             <label htmlFor="gender-filter" className="filter-label">Gender</label>
             <select id="gender-filter" value={selectedGender} onChange={(e) => setSelectedGender(e.target.value)} className="filter-select">
               {availableGenders.map((g) => (
@@ -743,16 +901,17 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
             </select>
           </div>
 
-          {(selectedCountry !== "All" || selectedAttribution !== "All" || selectedTutor !== "All" || selectedAgeBucket !== "All" || selectedDemandTier !== "All" || selectedStatus !== "All" || selectedLanguage !== "All" || selectedGender !== "All") && (
+          {(selectedCountry !== "All" || selectedAttribution !== "All" || selectedTutor !== "All" || selectedAgeBucket !== "All" || selectedDemandTier !== "All" || selectedLanguage !== "All" || selectedGender !== "All") && (
             <button
               className="filters-clear-btn"
               onClick={() => {
+                // Clears the detail filters only; the cohort segment above is a
+                // primary view selector and stays put.
                 setSelectedCountry("All");
                 setSelectedAttribution("All");
                 setSelectedTutor("All");
                 setSelectedAgeBucket("All");
                 setSelectedDemandTier("All");
-                setSelectedStatus("All");
                 setSelectedLanguage("All");
                 setSelectedGender("All");
               }}
@@ -769,31 +928,57 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       <section className="metrics-grid">
           <div className="metric-card">
             <div className="metric-value">{filteredUsers.length}</div>
-            <div className="metric-label">Active Users</div>
+            <div className="metric-label">
+              {selectedStatus === "ACTIVE"
+                ? "Active Users"
+                : selectedStatus === "TRIAL"
+                ? "Trial Users"
+                : selectedStatus === "PAST_DUE"
+                ? "Past-Due Users"
+                : "Total Users"}
+            </div>
             <div className="metric-description">
-              {selectedCountry === "All" ? "All countries" : selectedCountry}
+              {selectedStatus === "ACTIVE"
+                ? "Converted / subscribed"
+                : selectedStatus === "TRIAL"
+                ? "Trial only"
+                : selectedStatus === "PAST_DUE"
+                ? "Trial ended, payment failed"
+                : "Active + Trial + Past Due"}
+              {selectedCountry === "All" ? "" : ` · ${selectedCountry}`}
             </div>
           </div>
-          <div className="metric-card">
-            <div className="metric-value">{activeCount}</div>
-            <div className="metric-label">Active</div>
-            <div className="metric-description">Paying subscribers</div>
-          </div>
-          <div className="metric-card">
-            <div className="metric-value">{trialCount}</div>
-            <div className="metric-label">Trial</div>
-            <div className="metric-description">Currently on trial</div>
-          </div>
-          <div className="metric-card">
-            <div className="metric-value">
-              {filteredUsers.length > 0
-                ? ((activeCount / filteredUsers.length) * 100).toFixed(1)
-                : 0}
-              %
-            </div>
-            <div className="metric-label">Active Rate</div>
-            <div className="metric-description">Active / total</div>
-          </div>
+          {/* The status split + conversion rate only make sense across cohorts;
+              in a single-cohort view they'd be trivial, so show only in All. */}
+          {selectedStatus === "All" && (
+            <>
+              <div className="metric-card">
+                <div className="metric-value">{activeCount}</div>
+                <div className="metric-label">Active</div>
+                <div className="metric-description">Converted / subscribed</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{trialCount}</div>
+                <div className="metric-label">Trial</div>
+                <div className="metric-description">Still in trial</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{pastDueCount}</div>
+                <div className="metric-label">Past Due</div>
+                <div className="metric-description">Trial ended, payment failed</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">
+                  {activeCount + pastDueCount > 0
+                    ? ((activeCount / (activeCount + pastDueCount)) * 100).toFixed(0)
+                    : "—"}
+                  {activeCount + pastDueCount > 0 ? "%" : ""}
+                </div>
+                <div className="metric-label">Trial Conversion</div>
+                <div className="metric-description">Active / (Active + Past Due)</div>
+              </div>
+            </>
+          )}
           <div className="metric-card">
             <div className="metric-value">
               {filteredUsers.length > 0
@@ -998,6 +1183,25 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
               </div>
             </div>
           )}
+
+          <div key="reason" className="chart-container">
+            <h3 className="chart-drag-handle">Reason for Learning</h3>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              {reasonDistribution.length === 0 ? (
+                <p className="recent-empty-mini">No stated reasons for this selection</p>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={reasonDistribution.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={140} interval={0} />
+                    <Tooltip formatter={(value: number | undefined) => { const v = value ?? 0; return [`${v} user${v === 1 ? "" : "s"}`, "Reason"]; }} />
+                    <Bar dataKey="value" name="Users" fill="#f97316" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
         </RGL>
         </div>
 
@@ -1019,15 +1223,23 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 <option value="firstLessonDesc">First Lesson (newest first)</option>
                 <option value="name">Name (A-Z)</option>
                 <option value="streak">Streak (highest first)</option>
+                <option value="uniqueDays">Days Used (most first)</option>
+                <option value="engagement">Engagement (most turns)</option>
+                <option value="status">Payment Status (active first)</option>
                 <option value="age">Age (youngest first)</option>
               </select>
             </label>
+            {engagementError && (
+              <span className="eng-warning" title={engagementError}>
+                Engagement unavailable — run supabase/sql/engagement_by_user.sql
+              </span>
+            )}
           </div>
 
           <div className="user-list-container">
             {sortedUsers.length === 0 ? (
               <div className="empty-state">
-                No active or trial users found.
+                No users found for this selection.
               </div>
             ) : (
               <div className="table-container">
@@ -1046,6 +1258,12 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                       <th>Source</th>
                       <th>Last Login</th>
                       <th>First Lesson</th>
+                      <th>Days Used</th>
+                      <th
+                        title="Total user turns across completed lessons — lessons completed and average turns per lesson shown below. Ignores start-and-bail lessons, which add ~0 turns."
+                      >
+                        Engagement
+                      </th>
                       <th></th>
                     </tr>
                   </thead>
@@ -1079,10 +1297,15 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                                 ? "paying"
                                 : status === "TRIAL"
                                 ? "trial"
+                                : status === "PAST_DUE"
+                                ? "pastdue"
                                 : "free";
-                            const label = status
-                              ? status.charAt(0) + status.slice(1).toLowerCase()
-                              : "N/A";
+                            const label =
+                              status === "PAST_DUE"
+                                ? "Past Due"
+                                : status
+                                ? status.charAt(0) + status.slice(1).toLowerCase()
+                                : "N/A";
                             return (
                               <span className={`plan-pill plan-pill--${variant}`}>
                                 {label}
@@ -1118,6 +1341,25 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                         </td>
                         <td>{formatDate(user.last_logged_in)}</td>
                         <td>{formatDate(firstLessonMap.get(user.user_id))}</td>
+                        <td>{uniqueDaysMap.get(user.user_id) ?? 0}</td>
+                        <td>
+                          {(() => {
+                            const eng = engagementMap?.get(user.user_id);
+                            if (!engagementMap) return <span className="eng-muted">…</span>;
+                            if (!eng || eng.lessons === 0)
+                              return <span className="eng-muted">—</span>;
+                            const avg = eng.turns / eng.lessons;
+                            return (
+                              <div className="eng-cell">
+                                <span className="eng-score">{eng.turns.toLocaleString()}</span>
+                                <span className="eng-sub">
+                                  {eng.lessons} {eng.lessons === 1 ? "lesson" : "lessons"} ·{" "}
+                                  {avg.toFixed(1)}/lesson
+                                </span>
+                              </div>
+                            );
+                          })()}
+                        </td>
                         <td>
                           <a
                             href={profileUrl}

@@ -34,6 +34,33 @@ interface TranscriptRow {
   word_timeline: unknown;
   exit_phase: string | null;
   exit_trigger: string | null;
+  mic_mode: string | null;
+}
+
+// mic_mode: how the learner talked during the call. "button" = press-and-hold
+// push-to-talk (the historical default), "auto" = hands-free / AutoMic. Null on
+// lessons recorded before the field shipped.
+const MIC_MODE_META: Record<
+  string,
+  { label: string; icon: string; variant: string; hint: string }
+> = {
+  auto: {
+    label: "Hands-free",
+    icon: "🙌",
+    variant: "auto",
+    hint: "Hands-free / AutoMic — the learner just spoke and the tutor replied when they paused.",
+  },
+  button: {
+    label: "Push-to-talk",
+    icon: "👆",
+    variant: "button",
+    hint: "Press-and-hold mic — the learner held the mic button while speaking.",
+  },
+};
+
+function micModeMeta(mode: string | null) {
+  if (!mode) return null;
+  return MIC_MODE_META[mode] ?? null;
 }
 
 const PAGE_SIZE = 200;
@@ -832,6 +859,18 @@ const TranscriptCard: React.FC<{
             </span>
           );
         })()}
+        {(() => {
+          const mic = micModeMeta(row.mic_mode);
+          if (!mic) return null;
+          return (
+            <span
+              className={`lesson-card-badge lesson-card-badge--mic-${mic.variant}`}
+              title={`Mic mode — ${mic.hint}`}
+            >
+              {mic.icon} {mic.label}
+            </span>
+          );
+        })()}
         {messages.length > 0 && (
           <button
             className="transcript-toggle"
@@ -1129,7 +1168,7 @@ const AllTranscripts: React.FC<Props> = ({ onUserClick }) => {
         `id, created_at, user_id, lesson_id, conversation_transcript,
          user_improvement_feedback, user_rating_feedback,
          ended_early, payment_status, word_timeline,
-         exit_phase, exit_trigger`,
+         exit_phase, exit_trigger, mic_mode`,
       );
     if (appliedLessonId !== null) {
       query =

@@ -17,6 +17,10 @@ import {
   updateProfileNote,
   deleteSavedProfile,
 } from "./lib/savedProfilesStore";
+import { evaluateTutor, type TutorEvaluation } from "./lib/evaluateTutor";
+import { getSavedEvaluation, saveEvaluation } from "./lib/evalStore";
+import TutorEvalPanel from "./TutorEvalPanel";
+import SpeakingProgress from "./SpeakingProgress";
 import { format } from "date-fns";
 
 interface UserInfo {
@@ -27,6 +31,7 @@ interface UserInfo {
   native_language: string | null;
   learning_language: string | null;
   level: string | null;
+  reason: string | null;
   tutor: string | null;
   daily_streak: number;
   last_logged_in: string | null;
@@ -50,7 +55,7 @@ interface CompletedLesson {
   word_timeline: unknown;
 }
 
-const LessonCard: React.FC<{ lesson: CompletedLesson; userName: string | null }> = ({ lesson: c, userName }) => {
+const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ lesson: c, user }) => {
   const [open, setOpen] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
   const messages = parseTranscript(c.conversation_transcript);
@@ -61,6 +66,16 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; userName: string | null }>
   const [saved, setSaved] = useState(() => isTranscriptSaved(c.id));
   const [note, setNote] = useState(() => getSavedTranscript(c.id)?.note ?? "");
   const [noteOpen, setNoteOpen] = useState(false);
+
+  // Model-graded tutor performance for this conversation, seeded from
+  // localStorage so an evaluation survives refreshes and feeds the Evaluations
+  // tab. Mirrors the All Transcripts card exactly.
+  const [evaluation, setEvaluation] = useState<TutorEvaluation | null>(
+    () => getSavedEvaluation(c.id)?.evaluation ?? null,
+  );
+  const [showEval, setShowEval] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
 
   const toggleSaved = () => {
     if (saved) {
@@ -75,7 +90,7 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; userName: string | null }>
       lessonId: c.lesson_id,
       lessonDate: c.created_at,
       savedAt: new Date().toISOString(),
-      userName,
+      userName: user.preferred_name ?? null,
       endedEarly: Boolean(c.ended_early),
       rating: c.user_rating_feedback ?? null,
       turnCount: messages.length,
@@ -89,6 +104,44 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; userName: string | null }>
   const handleNoteChange = (value: string) => {
     setNote(value);
     updateNote(c.id, value);
+  };
+
+  // Grade the tutor once, then just toggle the panel. evaluateTutor caches by
+  // transcript content, so a re-mount of the card won't re-bill either. Writes
+  // to the same eval store as All Transcripts, so it also shows in Evaluations.
+  const handleEvaluate = async () => {
+    if (evaluation) {
+      setShowEval((v) => !v);
+      return;
+    }
+    setEvaluating(true);
+    setEvalError(null);
+    try {
+      const result = await evaluateTutor(messages, {
+        learningLanguage: user.learning_language,
+        nativeLanguage: user.native_language,
+        level: user.level,
+        reason: user.reason,
+        endedEarly: c.ended_early,
+      });
+      setEvaluation(result);
+      setShowEval(true);
+      saveEvaluation({
+        rowId: c.id,
+        userId: c.user_id,
+        lessonId: c.lesson_id,
+        lessonDate: c.created_at,
+        evaluatedAt: new Date().toISOString(),
+        userName: user.preferred_name ?? null,
+        endedEarly: Boolean(c.ended_early),
+        turnCount: messages.length,
+        evaluation: result,
+      });
+    } catch (e) {
+      setEvalError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEvaluating(false);
+    }
   };
 
   // Per-message translations of the conversation, indexed to match `messages`.
@@ -172,6 +225,22 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; userName: string | null }>
             {noteOpen ? "Hide Note" : note.trim() ? "Edit Note" : "Add Note"}
           </button>
         )}
+        {messages.length > 0 && (
+          <button
+            className="transcript-toggle transcript-toggle--eval"
+            onClick={handleEvaluate}
+            disabled={evaluating}
+            title="Have Claude grade the tutor's performance in this conversation"
+          >
+            {evaluating
+              ? "Evaluating…"
+              : evaluation
+                ? showEval
+                  ? "Hide Evaluation"
+                  : "Show Evaluation"
+                : "Evaluate Tutor"}
+          </button>
+        )}
       </div>
 
       {saved && noteOpen && (
@@ -232,6 +301,11 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; userName: string | null }>
           <strong>Improvement Feedback:</strong> {c.user_improvement_feedback}
         </div>
       )}
+
+      {evalError && (
+        <div className="eval-error">Tutor evaluation failed: {evalError}</div>
+      )}
+      {showEval && evaluation && <TutorEvalPanel evaluation={evaluation} />}
     </div>
   );
 };
@@ -268,7 +342,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
         .from("user_info")
         .select(
           `user_id, preferred_name, age, gender, native_language,
-           learning_language, level, tutor, daily_streak, last_logged_in,
+           learning_language, level, reason, tutor, daily_streak, last_logged_in,
            time_zone, attribution, demand_tier, payment_status`,
         )
         .eq("user_id", trimmed)
@@ -601,6 +675,9 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
               )}
             </div>
 
+            {/* Speaking trend from word_timeline (rate / fluency / words-per-turn) */}
+            <SpeakingProgress lessons={lessons} />
+
             {/* Lessons */}
             <div className="lookup-lessons-section">
               <h3 className="lookup-lessons-title">
@@ -613,7 +690,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
               ) : (
                 <div className="lessons-cards">
                   {lessons.map((c) => (
-                    <LessonCard key={c.id} lesson={c} userName={user.preferred_name} />
+                    <LessonCard key={c.id} lesson={c} user={user} />
                   ))}
                 </div>
               )}

@@ -120,6 +120,83 @@ body,
   padding: 1.5rem 2rem;
 }
 
+/* Cohort segment — the primary Active / Trial / All view selector that sits
+   above the filters bar and scopes the whole dashboard. */
+.cohort-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.cohort-bar-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+.cohort-seg {
+  display: inline-flex;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 3px;
+  gap: 3px;
+}
+.cohort-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: none;
+  background: transparent;
+  padding: 0.4rem 0.9rem;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #4b5563;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.cohort-seg-btn:hover {
+  background: #e5e7eb;
+}
+.cohort-seg-count {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.05rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.06);
+  color: inherit;
+}
+/* Selected state — indigo by default, green for Active, amber for Trial to
+   echo the status pills. */
+.cohort-seg-btn--on,
+.cohort-seg-btn--on:hover {
+  background: #4f46e5;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.cohort-seg-btn--active.cohort-seg-btn--on,
+.cohort-seg-btn--active.cohort-seg-btn--on:hover {
+  background: #059669;
+}
+.cohort-seg-btn--trial.cohort-seg-btn--on,
+.cohort-seg-btn--trial.cohort-seg-btn--on:hover {
+  background: #d97706;
+}
+.cohort-seg-btn--past_due.cohort-seg-btn--on,
+.cohort-seg-btn--past_due.cohort-seg-btn--on:hover {
+  background: #dc2626;
+}
+.cohort-seg-btn--on .cohort-seg-count {
+  background: rgba(255, 255, 255, 0.25);
+}
+.cohort-bar-hint {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
 .filters-bar {
   background: #ffffff;
   border: 1px solid #e5e7eb;
@@ -930,6 +1007,10 @@ body,
   color: #92400e;
 }
 
+.plan-pill--pastdue {
+  background: #fee2e2;
+  color: #991b1b;
+}
 .plan-pill--paying {
   background: #d1fae5;
   color: #065f46;
@@ -998,6 +1079,35 @@ body,
   font-weight: 500;
   color: #4338ca;
   text-transform: capitalize;
+}
+
+/* Engagement cell — headline = total user turns, sub = lessons + turns/lesson. */
+.eng-cell {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+.eng-score {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #4f46e5;
+}
+.eng-sub {
+  font-size: 0.68rem;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+.eng-muted {
+  color: #d1d5db;
+}
+.eng-warning {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
 }
 
 /* ============================
@@ -1546,6 +1656,78 @@ body,
   background: #f1f5f9;
   color: #475569;
   cursor: help;
+}
+
+/* mic_mode badges — how the learner talked. Hands-free (auto) reads as the
+   notable/newer mode (sky), push-to-talk (button) as the neutral default. */
+.lesson-card-badge--mic-auto {
+  background: #e0f2fe;
+  color: #0369a1;
+  cursor: help;
+}
+
+.lesson-card-badge--mic-button {
+  background: #f1f5f9;
+  color: #475569;
+  cursor: help;
+}
+
+/* ── Speaking Progress (User Lookup) ─────
+   Per-user trend of speaking rate / fluency / words-per-turn from word_timeline.
+   Reuses the segmented-control styles (.ret-seg / .ret-seg-btn) for the toggle. */
+.speaking-progress {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.25rem;
+}
+.speaking-progress-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.speaking-progress-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin: 0;
+}
+.speaking-progress-help {
+  font-size: 0.78rem;
+  color: #9ca3af;
+  line-height: 1.5;
+  max-width: 60ch;
+  margin: 0.2rem 0 0;
+}
+.speaking-progress-delta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0.25rem;
+}
+.speaking-progress-delta small {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #9ca3af;
+}
+.speaking-progress-delta--up {
+  color: #059669;
+}
+.speaking-progress-delta--down {
+  color: #d97706;
+}
+.speaking-progress-delta--flat {
+  color: #6b7280;
+}
+.speaking-progress-note {
+  font-size: 0.82rem;
+  color: #9ca3af;
+  margin: 0.6rem 0 0;
 }
 
 /* ── Retention tab ───── */

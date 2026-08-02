@@ -28,6 +28,7 @@ interface RecentUser {
   native_language: string | null;
   learning_language: string | null;
   level: string | null;
+  reason: string | null;
   attribution: string | null;
   platform: string | null;
   payment_status: string | null;
@@ -202,7 +203,7 @@ const RecentUsers: React.FC = () => {
           .from("user_info")
           .select(
             `user_id, preferred_name, age, gender, time_zone, native_language,
-             learning_language, level, attribution, platform, payment_status`,
+             learning_language, level, reason, attribution, platform, payment_status`,
           )
           .in("user_id", batch);
         if (error) throw new Error(error.message);
@@ -253,6 +254,22 @@ const RecentUsers: React.FC = () => {
     () => buildDistribution(users, (u) => u.level || "Unknown"),
     [users],
   );
+  // reason is a MULTI-SELECT field (comma-separated tags), and most users leave
+  // it unset ("Not specified"). Split each user's tags, drop the unset sentinel,
+  // and tally per tag so the chart shows only the goals users actually stated.
+  const reasonDistribution = useMemo(() => {
+    const map = new Map<string, number>();
+    users.forEach((u) => {
+      (u.reason ?? "")
+        .split(",")
+        .map((r) => r.trim())
+        .filter((r) => r && r.toLowerCase() !== "not specified")
+        .forEach((r) => map.set(r, (map.get(r) || 0) + 1));
+    });
+    return Array.from(map.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [users]);
   const attributionDistribution = useMemo(
     () => buildDistribution(users, (u) => u.attribution || "Unknown"),
     [users],
@@ -383,6 +400,7 @@ const RecentUsers: React.FC = () => {
             <BreakdownCard title="Native Language" data={nativeLangDistribution} color="#0ea5e9" limit={12} />
             <BreakdownCard title="Learning Language" data={learningLangDistribution} color="#14b8a6" limit={12} />
             <BreakdownCard title="Level" data={levelDistribution} color="#f59e0b" />
+            <BreakdownCard title="Reason for Learning" data={reasonDistribution} color="#f97316" limit={12} />
             <BreakdownCard title="Acquisition Channel" data={attributionDistribution} color="#10b981" limit={12} />
             <BreakdownCard title="Platform" data={platformDistribution} color="#64748b" />
             <BreakdownCard title="Payment Status" data={statusDistribution} color="#22c55e" />
