@@ -1,0 +1,16 @@
+# Supabase CLI config.
+#
+# Superwall and RevenueCat POST their webhooks with NO Supabase JWT — they use
+# their own signature headers. Supabase Edge Functions verify a JWT by default
+# and reject anything without one at the gateway (HTTP 401
+# UNAUTHORIZED_NO_AUTH_HEADER) BEFORE the function code runs. So JWT verification
+# must stay OFF for this function, or every subscription event is silently
+# dropped.
+#
+# This is pinned here because `supabase functions deploy` resets the setting to
+# its default (true) on every deploy unless the config (or --no-verify-jwt) says
+# otherwise — which is exactly how the webhook went dark for ~22h on 2026-08-03.
+project_id = "hngvsvjujxunowfwqzet"
+
+[functions.superwall-webhook]
+verify_jwt = false
