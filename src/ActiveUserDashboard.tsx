@@ -135,7 +135,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   // Per-user engagement (lessons completed + total user turns within them),
   // aggregated server-side by the engagement_by_user RPC. null until it
   // resolves; empty map (with engagementError set) if the RPC isn't installed.
-  const [engagementMap, setEngagementMap] = useState<Map<string, { lessons: number; turns: number }> | null>(null);
+  const [engagementMap, setEngagementMap] = useState<Map<string, { lessons: number; turns: number; days: number }> | null>(null);
   const [engagementError, setEngagementError] = useState<string | null>(null);
   // user_id → became_past_due_at (when they hit the billing issue). Fetched
   // defensively: if the column isn't migrated in yet the dashboard still works
@@ -304,9 +304,14 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           setEngagementError(engErr.message);
           setEngagementMap(new Map());
         } else {
-          const map = new Map<string, { lessons: number; turns: number }>();
-          (engRows as { user_id: string; lessons: number; turns: number }[] | null)?.forEach(
-            (r) => map.set(r.user_id, { lessons: Number(r.lessons), turns: Number(r.turns) }),
+          const map = new Map<string, { lessons: number; turns: number; days: number }>();
+          (engRows as { user_id: string; lessons: number; turns: number; days: number }[] | null)?.forEach(
+            (r) =>
+              map.set(r.user_id, {
+                lessons: Number(r.lessons),
+                turns: Number(r.turns),
+                days: Number(r.days ?? 0),
+              }),
           );
           setEngagementMap(map);
         }
@@ -552,13 +557,16 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
         });
         break;
       case "engagement":
-        // Most engaged first = most user turns across completed lessons.
-        // Total turns already blends volume (lessons) with depth (turns/lesson),
-        // so start-and-bail lessons (~0 turns) barely move it. Ties broken by
-        // lessons completed.
+        // Most engaged first. The BIGGEST factor is distinct active days —
+        // coming back on many different days beats a lot of talking in one
+        // sitting. Total turns (depth) only breaks ties between equal day counts,
+        // then lessons. Users with no engagement data sort last.
         sorted.sort((a, b) => {
           const ae = engagementMap?.get(a.user_id);
           const be = engagementMap?.get(b.user_id);
+          const ad = ae?.days ?? -1;
+          const bd = be?.days ?? -1;
+          if (bd !== ad) return bd - ad;
           const at = ae?.turns ?? -1;
           const bt = be?.turns ?? -1;
           if (bt !== at) return bt - at;
@@ -1266,7 +1274,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 <option value="name">Name (A-Z)</option>
                 <option value="streak">Streak (highest first)</option>
                 <option value="uniqueDays">Days Used (most first)</option>
-                <option value="engagement">Engagement (most turns)</option>
+                <option value="engagement">Engagement (most active days)</option>
                 {selectedStatus === "PAST_DUE" && (
                   <option value="billingIssue">Billing Issue (recent first)</option>
                 )}
@@ -1305,7 +1313,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                       <th>First Lesson</th>
                       <th>Days Used</th>
                       <th
-                        title="Total user turns across completed lessons — lessons completed and average turns per lesson shown below. Ignores start-and-bail lessons, which add ~0 turns."
+                        title="Distinct days the user came back and actually spoke (at least one real turn) — the primary engagement signal — with total user turns and lessons below. Onboarding lessons and no-speech opens are excluded."
                       >
                         Engagement
                       </th>
@@ -1398,13 +1406,14 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                             if (!engagementMap) return <span className="eng-muted">…</span>;
                             if (!eng || eng.lessons === 0)
                               return <span className="eng-muted">—</span>;
-                            const avg = eng.turns / eng.lessons;
                             return (
                               <div className="eng-cell">
-                                <span className="eng-score">{eng.turns.toLocaleString()}</span>
+                                <span className="eng-score">
+                                  {eng.days} {eng.days === 1 ? "day" : "days"}
+                                </span>
                                 <span className="eng-sub">
-                                  {eng.lessons} {eng.lessons === 1 ? "lesson" : "lessons"} ·{" "}
-                                  {avg.toFixed(1)}/lesson
+                                  {eng.turns.toLocaleString()} turns · {eng.lessons}{" "}
+                                  {eng.lessons === 1 ? "lesson" : "lessons"}
                                 </span>
                               </div>
                             );
