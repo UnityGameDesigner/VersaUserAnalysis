@@ -137,6 +137,10 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   // resolves; empty map (with engagementError set) if the RPC isn't installed.
   const [engagementMap, setEngagementMap] = useState<Map<string, { lessons: number; turns: number }> | null>(null);
   const [engagementError, setEngagementError] = useState<string | null>(null);
+  // user_id → became_past_due_at (when they hit the billing issue). Fetched
+  // defensively: if the column isn't migrated in yet the dashboard still works
+  // and the Billing Issue column just shows "—".
+  const [pastDueDateMap, setPastDueDateMap] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState<boolean>(true);
 
   // Measure container width for grid layout
@@ -305,6 +309,27 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
             (r) => map.set(r.user_id, { lessons: Number(r.lessons), turns: Number(r.turns) }),
           );
           setEngagementMap(map);
+        }
+
+        // Billing-issue dates for past-due users. Separate + defensive so a
+        // not-yet-migrated became_past_due_at column can't break the main fetch.
+        const { data: pdRows, error: pdErr } = await supabase
+          .from(SUPABASE_TABLE_NAME)
+          .select("user_id, became_past_due_at")
+          .eq("payment_status", "PAST_DUE")
+          .not("became_past_due_at", "is", null);
+        if (pdErr) {
+          console.warn(
+            "became_past_due_at unavailable — Billing Issue column will be blank. " +
+              "Apply supabase/sql/add_became_past_due_at.sql. Error:",
+            pdErr.message,
+          );
+        } else {
+          const pdMap = new Map<string, string>();
+          (pdRows as { user_id: string; became_past_due_at: string | null }[] | null)?.forEach(
+            (r) => { if (r.became_past_due_at) pdMap.set(r.user_id, r.became_past_due_at); },
+          );
+          setPastDueDateMap(pdMap);
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Unknown error";
@@ -516,6 +541,16 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           return bTime - aTime;
         });
         break;
+      case "billingIssue":
+        // Most recent billing issue first; users with no recorded date last.
+        sorted.sort((a, b) => {
+          const ad = pastDueDateMap.get(a.user_id);
+          const bd = pastDueDateMap.get(b.user_id);
+          const at = ad ? new Date(ad).getTime() : -Infinity;
+          const bt = bd ? new Date(bd).getTime() : -Infinity;
+          return bt - at;
+        });
+        break;
       case "engagement":
         // Most engaged first = most user turns across completed lessons.
         // Total turns already blends volume (lessons) with depth (turns/lesson),
@@ -541,7 +576,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
         break;
     }
     return sorted;
-  }, [filteredUsers, sortBy, firstLessonMap, uniqueDaysMap, engagementMap]);
+  }, [filteredUsers, sortBy, firstLessonMap, uniqueDaysMap, engagementMap, pastDueDateMap]);
 
   // ── Computed Data (all based on filteredUsers) ────
   const activeCount = useMemo(
@@ -823,7 +858,14 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
               className={`cohort-seg-btn cohort-seg-btn--${c.key.toLowerCase()}${
                 selectedStatus === c.key ? " cohort-seg-btn--on" : ""
               }`}
-              onClick={() => setSelectedStatus(c.key)}
+              onClick={() => {
+                setSelectedStatus(c.key);
+                // The billing-issue sort only exists in the Past Due view; drop
+                // back to a default if we leave it so the sort stays valid.
+                if (c.key !== "PAST_DUE" && sortBy === "billingIssue") {
+                  setSortBy("lastLoggedIn");
+                }
+              }}
             >
               <span className="cohort-seg-name">{c.label}</span>
               <span className="cohort-seg-count">{c.count}</span>
@@ -1225,6 +1267,9 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 <option value="streak">Streak (highest first)</option>
                 <option value="uniqueDays">Days Used (most first)</option>
                 <option value="engagement">Engagement (most turns)</option>
+                {selectedStatus === "PAST_DUE" && (
+                  <option value="billingIssue">Billing Issue (recent first)</option>
+                )}
                 <option value="status">Payment Status (active first)</option>
                 <option value="age">Age (youngest first)</option>
               </select>
@@ -1264,6 +1309,11 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                       >
                         Engagement
                       </th>
+                      {selectedStatus === "PAST_DUE" && (
+                        <th title="When the user hit the billing issue (entered past-due). Only recorded for billing issues since tracking was added; older ones show —.">
+                          Billing Issue
+                        </th>
+                      )}
                       <th></th>
                     </tr>
                   </thead>
@@ -1360,6 +1410,15 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                             );
                           })()}
                         </td>
+                        {selectedStatus === "PAST_DUE" && (
+                          <td>
+                            {pastDueDateMap.get(user.user_id) ? (
+                              formatDate(pastDueDateMap.get(user.user_id))
+                            ) : (
+                              <span className="eng-muted">—</span>
+                            )}
+                          </td>
+                        )}
                         <td>
                           <a
                             href={profileUrl}

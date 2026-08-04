@@ -85,9 +85,11 @@ function reportUnmapped(reason, ctx) {
   );
 }
 
-// First-conversion timestamp: prefer the provider's own event time, otherwise
-// fall back to receipt time. Accepts ISO strings or epoch-ms numbers.
-function pickConversionTimestamp(source, body, swData, rcEvent) {
+// Event timestamp: prefer the provider's own event time, otherwise fall back to
+// receipt time, otherwise now(). Accepts ISO strings or epoch-ms numbers. Used
+// to stamp both became_active_at (conversion) and became_past_due_at (billing
+// issue) — in each case we want when the event actually happened.
+function pickEventTimestamp(source, body, swData, rcEvent) {
   try {
     if (source === "revenuecat") {
       const ms = rcEvent?.event_timestamp_ms ?? rcEvent?.purchased_at_ms ?? null;
@@ -245,6 +247,25 @@ serve(async (req) => {
       });
     }
 
+    // Stamp WHEN the user hits a billing issue — but only on ENTRY into a
+    // past-due spell. This runs BEFORE the status overwrite below and is guarded
+    // to rows not already PAST_DUE (null counts as "not past due"), so repeated
+    // billing_issue / grace_period events within one spell don't keep bumping the
+    // date. It marks the first time they hit the issue, not the latest retry.
+    let becamePastDueAt = null;
+    if (paymentStatus === "PAST_DUE") {
+      becamePastDueAt = pickEventTimestamp(source, body, swData, rcEvent);
+      const { error: pdErr } = await supabase
+        .from("user_info")
+        .update({ became_past_due_at: becamePastDueAt })
+        .eq("user_id", userId)
+        .or("payment_status.is.null,payment_status.neq.PAST_DUE");
+      if (pdErr) {
+        // Non-fatal: the payment_status write below is what matters. Log only.
+        console.error("Error stamping became_past_due_at:", pdErr);
+      }
+    }
+
     // Even if status is UNKNOWN, we still write it — so DB is the source of truth.
     // `.select("user_id")` is load-bearing: without it there is no way to tell an
     // update that hit a row from one that matched nothing — both return error: null.
@@ -296,7 +317,7 @@ serve(async (req) => {
     // never overwrite the original conversion date.
     let becameActiveAt = null;
     if (paymentStatus === "ACTIVE") {
-      becameActiveAt = pickConversionTimestamp(source, body, swData, rcEvent);
+      becameActiveAt = pickEventTimestamp(source, body, swData, rcEvent);
       const { error: convErr } = await supabase.from("user_info").update({
         became_active_at: becameActiveAt
       }).eq("user_id", userId).is("became_active_at", null);
@@ -316,7 +337,8 @@ serve(async (req) => {
       userId,
       eventType: rawEventType,
       payment_status: paymentStatus,
-      became_active_at: becameActiveAt
+      became_active_at: becameActiveAt,
+      became_past_due_at: becamePastDueAt
     }), {
       status: 200,
       headers: {
