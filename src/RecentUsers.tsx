@@ -37,12 +37,17 @@ interface RecentUser {
 const PAGE_SIZE = 1000;
 // 50 UUIDs per user_id=in.(…) chunk keeps each URL ~2 KB (see CompletedLessons).
 const USER_ID_CHUNK = 50;
+// Resolve chunks this many at a time. Wide windows produce ~100+ chunks; fetching
+// them sequentially was the load-time bottleneck, so fetch in bounded-concurrency
+// waves (8 keeps us well under PostgREST connection limits).
+const CHUNK_CONCURRENCY = 8;
 
 const WINDOW_OPTIONS = [
   { label: "Past 6 hours", hours: 6 },
   { label: "Past 12 hours", hours: 12 },
   { label: "Past 24 hours", hours: 24 },
   { label: "Past 48 hours", hours: 48 },
+  { label: "Past 96 hours", hours: 96 },
 ];
 
 interface Bucket {
@@ -153,8 +158,14 @@ const BreakdownCard: React.FC<{
 
 const RecentUsers: React.FC = () => {
   const [users, setUsers] = useState<RecentUser[]>([]);
-  const [lessonCount, setLessonCount] = useState(0);
+  // user_id → lessons completed in the window, so the lesson metrics can be
+  // scoped to the selected learning language.
+  const [userLessonCounts, setUserLessonCounts] = useState<Map<string, number>>(new Map());
   const [windowHours, setWindowHours] = useState(12);
+  const [selectedLanguage, setSelectedLanguage] = useState("All");
+  const [selectedNative, setSelectedNative] = useState("All");
+  const [selectedCountry, setSelectedCountry] = useState("All");
+  const [selectedAge, setSelectedAge] = useState("All");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
@@ -169,7 +180,6 @@ const RecentUsers: React.FC = () => {
       //    tiny. Keyset-paginate by id; the window's rows cluster at the high
       //    end of the id range, so this is a couple of pages.
       const lessonsByUser = new Map<string, number>();
-      let totalLessons = 0;
       let lastId = 0;
       let hasMore = true;
       while (hasMore) {
@@ -184,7 +194,6 @@ const RecentUsers: React.FC = () => {
         if (data && data.length > 0) {
           (data as { id: number; user_id: string }[]).forEach((r) => {
             lessonsByUser.set(r.user_id, (lessonsByUser.get(r.user_id) || 0) + 1);
-            totalLessons++;
           });
           lastId = data[data.length - 1].id;
           hasMore = data.length === PAGE_SIZE;
@@ -194,25 +203,36 @@ const RecentUsers: React.FC = () => {
       }
 
       // 2. Resolve those users' profiles from user_info, chunked by user_id
-      //    (no FK exists for an embedded join).
+      //    (no FK exists for an embedded join). Fetch chunks in bounded-
+      //    concurrency waves so wide windows (~100+ chunks) stay fast.
       const userIds = Array.from(lessonsByUser.keys());
-      const byId = new Map<string, RecentUser>();
+      const chunks: string[][] = [];
       for (let i = 0; i < userIds.length; i += USER_ID_CHUNK) {
-        const batch = userIds.slice(i, i + USER_ID_CHUNK);
-        const { data, error } = await supabase
-          .from("user_info")
-          .select(
-            `user_id, preferred_name, age, gender, time_zone, native_language,
-             learning_language, level, reason, attribution, platform, payment_status`,
-          )
-          .in("user_id", batch);
-        if (error) throw new Error(error.message);
-        (data as RecentUser[] | null)?.forEach((u) => {
-          if (!byId.has(u.user_id)) byId.set(u.user_id, u);
-        });
+        chunks.push(userIds.slice(i, i + USER_ID_CHUNK));
+      }
+      const byId = new Map<string, RecentUser>();
+      for (let i = 0; i < chunks.length; i += CHUNK_CONCURRENCY) {
+        const wave = chunks.slice(i, i + CHUNK_CONCURRENCY);
+        const results = await Promise.all(
+          wave.map((batch) =>
+            supabase
+              .from("user_info")
+              .select(
+                `user_id, preferred_name, age, gender, time_zone, native_language,
+                 learning_language, level, reason, attribution, platform, payment_status`,
+              )
+              .in("user_id", batch),
+          ),
+        );
+        for (const { data, error } of results) {
+          if (error) throw new Error(error.message);
+          (data as RecentUser[] | null)?.forEach((u) => {
+            if (!byId.has(u.user_id)) byId.set(u.user_id, u);
+          });
+        }
       }
 
-      setLessonCount(totalLessons);
+      setUserLessonCounts(lessonsByUser);
       setUsers(Array.from(byId.values()));
       setLoadedAt(new Date());
     } catch (e) {
@@ -226,40 +246,108 @@ const RecentUsers: React.FC = () => {
     fetchRecent();
   }, [fetchRecent]);
 
-  // ── Breakdowns ──────────────────────────────────────────────
+  // ── Segment filters ─────────────────────────────────────────
+  // Option lists (prettified, by frequency) for each filter. Always derived from
+  // the FULL window set, so switching one filter never hides options in another.
+  const optionsBy = useCallback(
+    (accessor: (u: RecentUser) => string) => {
+      const map = new Map<string, number>();
+      users.forEach((u) => {
+        const k = accessor(u);
+        map.set(k, (map.get(k) || 0) + 1);
+      });
+      return Array.from(map.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+    },
+    [users],
+  );
+  const availableLanguages = useMemo(
+    () => optionsBy((u) => prettyLang(u.learning_language)),
+    [optionsBy],
+  );
+  const availableNatives = useMemo(
+    () => optionsBy((u) => prettyLang(u.native_language)),
+    [optionsBy],
+  );
+  const availableCountries = useMemo(
+    () => optionsBy((u) => getCountryFromTimezone(u.time_zone)),
+    [optionsBy],
+  );
+  // Age options keep their natural bucket order (not by-count like the others).
+  const availableAges = useMemo(() => {
+    const order = new Map(AGE_ORDER.map((b, i) => [b, i]));
+    return optionsBy((u) => getAgeBucket(u.age)).sort(
+      (a, b) => (order.get(a.name) ?? 99) - (order.get(b.name) ?? 99),
+    );
+  }, [optionsBy]);
+
+  // Every breakdown and metric below is scoped to this set — all filters compose.
+  const filteredUsers = useMemo(
+    () =>
+      users.filter((u) => {
+        if (
+          selectedLanguage !== "All" &&
+          prettyLang(u.learning_language) !== selectedLanguage
+        )
+          return false;
+        if (selectedNative !== "All" && prettyLang(u.native_language) !== selectedNative)
+          return false;
+        if (
+          selectedCountry !== "All" &&
+          getCountryFromTimezone(u.time_zone) !== selectedCountry
+        )
+          return false;
+        if (selectedAge !== "All" && getAgeBucket(u.age) !== selectedAge)
+          return false;
+        return true;
+      }),
+    [users, selectedLanguage, selectedNative, selectedCountry, selectedAge],
+  );
+
+  const filteredLessonCount = useMemo(
+    () =>
+      filteredUsers.reduce(
+        (sum, u) => sum + (userLessonCounts.get(u.user_id) || 0),
+        0,
+      ),
+    [filteredUsers, userLessonCounts],
+  );
+
+  // ── Breakdowns (all scoped to filteredUsers) ────────────────
   const ageDistribution = useMemo(() => {
-    const dist = buildDistribution(users, (u) => getAgeBucket(u.age));
+    const dist = buildDistribution(filteredUsers, (u) => getAgeBucket(u.age));
     const order = new Map(AGE_ORDER.map((b, i) => [b, i]));
     return dist.sort(
       (a, b) => (order.get(a.name) ?? 99) - (order.get(b.name) ?? 99),
     );
-  }, [users]);
+  }, [filteredUsers]);
   const countryDistribution = useMemo(
-    () => buildDistribution(users, (u) => getCountryFromTimezone(u.time_zone)),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => getCountryFromTimezone(u.time_zone)),
+    [filteredUsers],
   );
   const genderDistribution = useMemo(
-    () => buildDistribution(users, (u) => u.gender || "Unknown"),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => u.gender || "Unknown"),
+    [filteredUsers],
   );
   const nativeLangDistribution = useMemo(
-    () => buildDistribution(users, (u) => prettyLang(u.native_language)),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => prettyLang(u.native_language)),
+    [filteredUsers],
   );
   const learningLangDistribution = useMemo(
-    () => buildDistribution(users, (u) => prettyLang(u.learning_language)),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => prettyLang(u.learning_language)),
+    [filteredUsers],
   );
   const levelDistribution = useMemo(
-    () => buildDistribution(users, (u) => u.level || "Unknown"),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => u.level || "Unknown"),
+    [filteredUsers],
   );
   // reason is a MULTI-SELECT field (comma-separated tags), and most users leave
   // it unset ("Not specified"). Split each user's tags, drop the unset sentinel,
   // and tally per tag so the chart shows only the goals users actually stated.
   const reasonDistribution = useMemo(() => {
     const map = new Map<string, number>();
-    users.forEach((u) => {
+    filteredUsers.forEach((u) => {
       (u.reason ?? "")
         .split(",")
         .map((r) => r.trim())
@@ -269,26 +357,26 @@ const RecentUsers: React.FC = () => {
     return Array.from(map.entries())
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [users]);
+  }, [filteredUsers]);
   const attributionDistribution = useMemo(
-    () => buildDistribution(users, (u) => u.attribution || "Unknown"),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => u.attribution || "Unknown"),
+    [filteredUsers],
   );
   const platformDistribution = useMemo(
-    () => buildDistribution(users, (u) => u.platform || "Unknown"),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => u.platform || "Unknown"),
+    [filteredUsers],
   );
   const statusDistribution = useMemo(
-    () => buildDistribution(users, (u) => u.payment_status || "None / free"),
-    [users],
+    () => buildDistribution(filteredUsers, (u) => u.payment_status || "None / free"),
+    [filteredUsers],
   );
 
   const activeTrial = useMemo(
     () =>
-      users.filter(
+      filteredUsers.filter(
         (u) => u.payment_status === "ACTIVE" || u.payment_status === "TRIAL",
       ).length,
-    [users],
+    [filteredUsers],
   );
 
   const windowLabel =
@@ -314,13 +402,93 @@ const RecentUsers: React.FC = () => {
               ` · as of ${loadedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`}
           </span>
         </h2>
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+          <label className="tx-chip" data-active={selectedLanguage !== "All"}>
+            <span className="tx-chip-label">Learning</span>
+            <select
+              className="tx-chip-select"
+              value={selectedLanguage}
+              onChange={(e) => setSelectedLanguage(e.target.value)}
+            >
+              <option value="All">All languages</option>
+              {availableLanguages.map((l) => (
+                <option key={l.name} value={l.name}>
+                  {l.name} ({l.count})
+                </option>
+              ))}
+            </select>
+            <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </label>
+          <label className="tx-chip" data-active={selectedNative !== "All"}>
+            <span className="tx-chip-label">Native</span>
+            <select
+              className="tx-chip-select"
+              value={selectedNative}
+              onChange={(e) => setSelectedNative(e.target.value)}
+            >
+              <option value="All">All natives</option>
+              {availableNatives.map((l) => (
+                <option key={l.name} value={l.name}>
+                  {l.name} ({l.count})
+                </option>
+              ))}
+            </select>
+            <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </label>
+          <label className="tx-chip" data-active={selectedCountry !== "All"}>
+            <span className="tx-chip-label">Country</span>
+            <select
+              className="tx-chip-select"
+              value={selectedCountry}
+              onChange={(e) => setSelectedCountry(e.target.value)}
+            >
+              <option value="All">All countries</option>
+              {availableCountries.map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name} ({c.count})
+                </option>
+              ))}
+            </select>
+            <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </label>
+          <label className="tx-chip" data-active={selectedAge !== "All"}>
+            <span className="tx-chip-label">Age</span>
+            <select
+              className="tx-chip-select"
+              value={selectedAge}
+              onChange={(e) => setSelectedAge(e.target.value)}
+            >
+              <option value="All">All ages</option>
+              {availableAges.map((a) => (
+                <option key={a.name} value={a.name}>
+                  {a.name} ({a.count})
+                </option>
+              ))}
+            </select>
+            <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </label>
           <label className="tx-chip" data-active={windowHours !== 12}>
             <span className="tx-chip-label">Window</span>
             <select
               className="tx-chip-select"
               value={windowHours}
-              onChange={(e) => setWindowHours(Number(e.target.value))}
+              onChange={(e) => {
+                setWindowHours(Number(e.target.value));
+                // A value present in one window may be absent in another; reset
+                // every filter so none can point at a value that isn't there.
+                setSelectedLanguage("All");
+                setSelectedNative("All");
+                setSelectedCountry("All");
+                setSelectedAge("All");
+              }}
             >
               {WINDOW_OPTIONS.map((w) => (
                 <option key={w.hours} value={w.hours}>
@@ -345,6 +513,24 @@ const RecentUsers: React.FC = () => {
       <p className="ret-chart-sub" style={{ marginTop: "0.4rem" }}>
         Distinct users who completed a lesson in the {windowLabel.toLowerCase()},
         broken down by profile. Includes users of every payment status.
+        {(selectedLanguage !== "All" ||
+          selectedNative !== "All" ||
+          selectedCountry !== "All" ||
+          selectedAge !== "All") && (
+          <>
+            {" "}
+            Segmented to{" "}
+            {[
+              selectedLanguage !== "All" && `learning ${selectedLanguage}`,
+              selectedNative !== "All" && `native ${selectedNative}`,
+              selectedCountry !== "All" && `from ${selectedCountry}`,
+              selectedAge !== "All" && `aged ${selectedAge}`,
+            ]
+              .filter(Boolean)
+              .join(", ")}
+            .
+          </>
+        )}
       </p>
 
       {error && (
@@ -366,18 +552,27 @@ const RecentUsers: React.FC = () => {
         <>
           <section className="metrics-grid" style={{ marginTop: "1rem" }}>
             <div className="metric-card">
-              <div className="metric-value">{users.length}</div>
+              <div className="metric-value">{filteredUsers.length}</div>
               <div className="metric-label">Recent Users</div>
-              <div className="metric-description">Completed a lesson</div>
+              <div className="metric-description">
+                {selectedLanguage === "All" &&
+                selectedNative === "All" &&
+                selectedCountry === "All" &&
+                selectedAge === "All"
+                  ? "Completed a lesson"
+                  : "Matching filters"}
+              </div>
             </div>
             <div className="metric-card">
-              <div className="metric-value">{lessonCount}</div>
+              <div className="metric-value">{filteredLessonCount}</div>
               <div className="metric-label">Lessons Completed</div>
               <div className="metric-description">In window</div>
             </div>
             <div className="metric-card">
               <div className="metric-value">
-                {users.length > 0 ? (lessonCount / users.length).toFixed(1) : "0"}
+                {filteredUsers.length > 0
+                  ? (filteredLessonCount / filteredUsers.length).toFixed(1)
+                  : "0"}
               </div>
               <div className="metric-label">Avg Lessons / User</div>
               <div className="metric-description">In window</div>
@@ -386,8 +581,8 @@ const RecentUsers: React.FC = () => {
               <div className="metric-value">{activeTrial}</div>
               <div className="metric-label">Active / Trial</div>
               <div className="metric-description">
-                {users.length > 0
-                  ? `${((activeTrial / users.length) * 100).toFixed(0)}% of recent`
+                {filteredUsers.length > 0
+                  ? `${((activeTrial / filteredUsers.length) * 100).toFixed(0)}% of recent`
                   : "—"}
               </div>
             </div>
