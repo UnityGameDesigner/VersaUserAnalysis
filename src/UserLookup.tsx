@@ -21,6 +21,7 @@ import { evaluateTutor, type TutorEvaluation } from "./lib/evaluateTutor";
 import { getSavedEvaluation, saveEvaluation } from "./lib/evalStore";
 import TutorEvalPanel from "./TutorEvalPanel";
 import SpeakingProgress from "./SpeakingProgress";
+import { LessonBadges } from "./LessonBadges";
 import { format } from "date-fns";
 
 interface UserInfo {
@@ -53,6 +54,9 @@ interface CompletedLesson {
   ended_early: boolean | null;
   payment_status: string;
   word_timeline: unknown;
+  exit_phase: string | null;
+  exit_trigger: string | null;
+  mic_mode: string | null;
 }
 
 const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ lesson: c, user }) => {
@@ -191,11 +195,7 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
             {c.user_rating_feedback}★
           </span>
         )}
-        {c.ended_early && (
-          <span className="lesson-card-badge lesson-card-badge--early">
-            Ended Early
-          </span>
-        )}
+        <LessonBadges row={c} messages={messages} />
         {messages.length > 0 && (
           <button
             className="transcript-toggle"
@@ -363,7 +363,8 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           .select(
             `id, created_at, user_id, lesson_id, conversation_transcript,
              phrase_feedback, user_improvement_feedback, user_rating_feedback,
-             ended_early, payment_status, word_timeline`,
+             ended_early, payment_status, word_timeline,
+             exit_phase, exit_trigger, mic_mode`,
           )
           .eq("user_id", trimmed)
           .gt("id", lastId)
