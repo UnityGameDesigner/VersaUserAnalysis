@@ -10,18 +10,19 @@ import RetentionAnalysis from "./RetentionAnalysis";
 import Feedback from "./Feedback";
 import Evaluations from "./Evaluations";
 import RecentUsers from "./RecentUsers";
+import CancelledTrials from "./CancelledTrials";
 
 interface NavState {
   tab: Tab;
   lookupUserId: string | null;
 }
 
-type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "feedback" | "retention" | "user-lookup" | "ab-compare";
+type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "feedback" | "retention" | "cancelled-trials" | "user-lookup" | "ab-compare";
 
 function stateFromHash(): NavState {
   const hash = window.location.hash.replace("#", "");
   const [tab, userId] = hash.split(":");
-  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "feedback", "retention", "user-lookup", "ab-compare"];
+  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "feedback", "retention", "cancelled-trials", "user-lookup", "ab-compare"];
   return {
     tab: validTabs.includes(tab as Tab) ? (tab as Tab) : "dashboard",
     lookupUserId: userId || null,
@@ -129,6 +130,12 @@ const App: React.FC = () => {
             Retention
           </button>
           <button
+            className={`sidebar-nav-btn${activeTab === "cancelled-trials" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("cancelled-trials")}
+          >
+            Cancelled Trials
+          </button>
+          <button
             className={`sidebar-nav-btn${activeTab === "user-lookup" ? " sidebar-nav-btn--active" : ""}`}
             onClick={() => navigate("user-lookup")}
           >
@@ -182,6 +189,12 @@ const App: React.FC = () => {
           </div>
         ) : activeTab === "retention" ? (
           <RetentionAnalysis onUserClick={handleUserClick} />
+        ) : activeTab === "cancelled-trials" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <CancelledTrials onUserClick={handleUserClick} />
+            </div>
+          </div>
         ) : (
           <div className="dashboard-container">
             <div className="dashboard-inner">
