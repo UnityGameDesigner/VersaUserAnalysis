@@ -85,11 +85,15 @@ function reportUnmapped(reason, ctx) {
   );
 }
 
-// Event timestamp: prefer the provider's own event time, otherwise fall back to
-// receipt time, otherwise now(). Accepts ISO strings or epoch-ms numbers. Used
-// to stamp both became_active_at (conversion) and became_past_due_at (billing
-// issue) — in each case we want when the event actually happened.
-function pickEventTimestamp(source, body, swData, rcEvent) {
+// Conversion timestamp for became_active_at: WHEN THE USER PAID. Prefer the
+// provider's transaction/purchase time, falling back to receipt time. Accepts
+// ISO strings or epoch-ms numbers.
+//
+// Do NOT reuse this for billing issues: on a billing_issue event the purchase /
+// transaction fields are the ORIGINAL subscription date (days earlier, e.g. the
+// trial start), so stamping past-due with them records the wrong day. Use
+// pickBillingIssueTimestamp for that.
+function pickConversionTimestamp(source, body, swData, rcEvent) {
   try {
     if (source === "revenuecat") {
       const ms = rcEvent?.event_timestamp_ms ?? rcEvent?.purchased_at_ms ?? null;
@@ -109,6 +113,30 @@ function pickEventTimestamp(source, body, swData, rcEvent) {
         const d = new Date(cand);
         if (!isNaN(d.getTime())) return d.toISOString();
       }
+    }
+  } catch (_) {
+    // fall through to receipt time
+  }
+  return new Date().toISOString();
+}
+
+// Billing-issue timestamp for became_past_due_at: WHEN THE BILLING ISSUE HAPPENED
+// — which is the event's own fire time, NOT the purchase/transaction time (that
+// is the original subscription date, days earlier — the bug that stamped a
+// past-due date of the trial-start day).
+//   - RevenueCat: event_timestamp_ms is exactly the event fire time. (We never
+//     touch purchased_at_ms here.)
+//   - Superwall: its billing-issue payload carries only transaction dates (the
+//     original purchase), with no field we can trust as the event time — so fall
+//     back to receipt time, which for a real-time webhook is accurate to within
+//     delivery latency and can never be days stale.
+// If we later confirm a reliable Superwall event-time field from a raw payload,
+// add it here.
+function pickBillingIssueTimestamp(source, rcEvent) {
+  try {
+    if (source === "revenuecat") {
+      const ms = rcEvent?.event_timestamp_ms ?? null;
+      if (typeof ms === "number" && ms > 0) return new Date(ms).toISOString();
     }
   } catch (_) {
     // fall through to receipt time
@@ -254,7 +282,7 @@ serve(async (req) => {
     // date. It marks the first time they hit the issue, not the latest retry.
     let becamePastDueAt = null;
     if (paymentStatus === "PAST_DUE") {
-      becamePastDueAt = pickEventTimestamp(source, body, swData, rcEvent);
+      becamePastDueAt = pickBillingIssueTimestamp(source, rcEvent);
       const { error: pdErr } = await supabase
         .from("user_info")
         .update({ became_past_due_at: becamePastDueAt })
@@ -317,7 +345,7 @@ serve(async (req) => {
     // never overwrite the original conversion date.
     let becameActiveAt = null;
     if (paymentStatus === "ACTIVE") {
-      becameActiveAt = pickEventTimestamp(source, body, swData, rcEvent);
+      becameActiveAt = pickConversionTimestamp(source, body, swData, rcEvent);
       const { error: convErr } = await supabase.from("user_info").update({
         became_active_at: becameActiveAt
       }).eq("user_id", userId).is("became_active_at", null);
