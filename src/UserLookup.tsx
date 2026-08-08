@@ -22,6 +22,8 @@ import { getSavedEvaluation, saveEvaluation } from "./lib/evalStore";
 import TutorEvalPanel from "./TutorEvalPanel";
 import SpeakingProgress from "./SpeakingProgress";
 import { LessonBadges } from "./LessonBadges";
+import { analyzeCancellation, reasonMeta, type CancelAnalysis } from "./lib/analyzeCancellation";
+import { getCancelAnalysis, saveCancelAnalysis } from "./lib/cancelAnalysisStore";
 import { format } from "date-fns";
 
 interface UserInfo {
@@ -40,6 +42,19 @@ interface UserInfo {
   attribution: string | null;
   demand_tier: string | null;
   payment_status: string;
+  canceled_at: string | null;
+  last_completed_at: string | null;
+}
+
+interface NotificationRow {
+  id: number;
+  bucket: string | null;
+  source: string | null;
+  status: string | null;
+  locale: string | null;
+  sent_at: string | null;
+  opened_at: string | null;
+  error_detail: string | null;
 }
 
 interface CompletedLesson {
@@ -58,6 +73,304 @@ interface CompletedLesson {
   exit_trigger: string | null;
   mic_mode: string | null;
 }
+
+const NOTIF_STATUS_META: Record<string, { label: string; color: string }> = {
+  delivered: { label: "Delivered", color: "#059669" },
+  sent: { label: "Sent", color: "#0ea5e9" },
+  dead_token: { label: "Dead token", color: "#9ca3af" },
+  failed: { label: "Failed", color: "#dc2626" },
+  error: { label: "Error", color: "#dc2626" },
+};
+
+// Breakdown of the push notifications a user was sent — what types, whether they
+// were delivered, and (rarely) opened. Reads user_info's notification_log rows.
+const NotificationsPanel: React.FC<{ notifications: NotificationRow[] }> = ({ notifications }) => {
+  const total = notifications.length;
+  const opened = notifications.filter((n) => n.opened_at).length;
+  const statusCount = (s: string) =>
+    notifications.filter((n) => (n.status || "").toLowerCase() === s).length;
+  const delivered = statusCount("delivered");
+  const dead = statusCount("dead_token");
+  const failed = statusCount("failed") + statusCount("error");
+
+  const groups = new Map<string, { count: number; opened: number }>();
+  notifications.forEach((n) => {
+    const k = `${n.source ?? "?"} · ${n.bucket ?? "?"}`;
+    const g = groups.get(k) ?? { count: 0, opened: 0 };
+    g.count++;
+    if (n.opened_at) g.opened++;
+    groups.set(k, g);
+  });
+  const rows = [...groups.entries()].sort((a, b) => b[1].count - a[1].count);
+  const recent = notifications.slice(0, 12);
+
+  return (
+    <div className="lookup-lessons-section" style={{ marginTop: "1.5rem" }}>
+      <h3 className="lookup-lessons-title">Notifications ({total})</h3>
+      {total === 0 ? (
+        <div className="empty-state">No notifications on record for this user.</div>
+      ) : (
+        <>
+          <div className="metrics-grid" style={{ marginBottom: "1rem" }}>
+            <div className="metric-card">
+              <div className="metric-value">{total}</div>
+              <div className="metric-label">Sent</div>
+            </div>
+            <div className="metric-card">
+              <div className="metric-value">{delivered}</div>
+              <div className="metric-label">Delivered</div>
+            </div>
+            <div className="metric-card">
+              <div className="metric-value">{dead + failed}</div>
+              <div className="metric-label">Dead / Failed</div>
+              <div className="metric-description">{dead} dead token · {failed} failed</div>
+            </div>
+            <div className="metric-card">
+              <div className="metric-value">{opened}</div>
+              <div className="metric-label">Opened</div>
+              <div className="metric-description">
+                {total > 0 ? `${((opened / total) * 100).toFixed(0)}% open rate` : "—"}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "1rem" }}>
+            <div className="table-container">
+              <table className="data-table">
+                <thead className="table-head">
+                  <tr>
+                    <th>Type (source · bucket)</th>
+                    <th>Sent</th>
+                    <th>Opened</th>
+                  </tr>
+                </thead>
+                <tbody className="table-body">
+                  {rows.map(([k, g]) => (
+                    <tr key={k}>
+                      <td>{k}</td>
+                      <td>{g.count}</td>
+                      <td>{g.opened}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="table-container">
+              <table className="data-table">
+                <thead className="table-head">
+                  <tr>
+                    <th>When</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody className="table-body">
+                  {recent.map((n) => {
+                    const sm = NOTIF_STATUS_META[(n.status || "").toLowerCase()] ?? {
+                      label: n.status || "—",
+                      color: "#6b7280",
+                    };
+                    return (
+                      <tr key={n.id}>
+                        <td>{n.sent_at ? format(new Date(n.sent_at), "MMM d, h:mm a") : "—"}</td>
+                        <td>{`${n.source ?? "?"} · ${n.bucket ?? "?"}`}</td>
+                        <td>
+                          <span style={{ color: sm.color, fontWeight: 600 }}>{sm.label}</span>
+                          {n.opened_at && <span style={{ color: "#4f46e5", marginLeft: "0.4rem" }}>· opened</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          {total > recent.length && (
+            <p className="ret-chart-sub" style={{ marginTop: "0.5rem" }}>
+              Showing the {recent.length} most recent of {total}.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+// LLM-inferred "why they likely cancelled" from the user's call logs + signals.
+const CancellationCard: React.FC<{
+  user: UserInfo;
+  lessons: CompletedLesson[];
+  notifications: NotificationRow[];
+}> = ({ user, lessons, notifications }) => {
+  const [analysis, setAnalysis] = useState<CancelAnalysis | null>(
+    () => getCancelAnalysis(user.user_id)?.analysis ?? null,
+  );
+  const [analyzedAt, setAnalyzedAt] = useState<string | null>(
+    () => getCancelAnalysis(user.user_id)?.analyzedAt ?? null,
+  );
+  const [analyzing, setAnalyzing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = async () => {
+    setAnalyzing(true);
+    setErr(null);
+    try {
+      const real = lessons.filter((l) => l.lesson_id !== 42);
+      const firstLessonAt = lessons.length
+        ? [...lessons].sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at))[0].created_at
+        : null;
+      const result = await analyzeCancellation({
+        userId: user.user_id,
+        profile: {
+          preferred_name: user.preferred_name,
+          learning_language: user.learning_language,
+          native_language: user.native_language,
+          level: user.level,
+          reason: user.reason,
+          daily_streak: user.daily_streak,
+          first_lesson_at: firstLessonAt,
+          last_completed_at: user.last_completed_at,
+          canceled_at: user.canceled_at,
+        },
+        lessons: lessons.map((l) => ({
+          lesson_id: l.lesson_id,
+          created_at: l.created_at,
+          ended_early: l.ended_early,
+          user_rating_feedback: l.user_rating_feedback,
+          exit_phase: l.exit_phase,
+          exit_trigger: l.exit_trigger,
+          mic_mode: l.mic_mode,
+          conversation_transcript: l.conversation_transcript,
+        })),
+        notifications: notifications.map((n) => ({
+          bucket: n.bucket,
+          source: n.source,
+          status: n.status,
+          sent_at: n.sent_at,
+          opened_at: n.opened_at,
+        })),
+      });
+      const at = new Date().toISOString();
+      setAnalysis(result);
+      setAnalyzedAt(at);
+      saveCancelAnalysis({
+        userId: user.user_id,
+        analyzedAt: at,
+        userName: user.preferred_name ?? null,
+        lessonCount: real.length,
+        analysis: result,
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const meta = analysis ? reasonMeta(analysis.primary_reason) : null;
+
+  return (
+    <div
+      className="lookup-profile-card"
+      style={{ marginTop: "1rem", borderLeft: "4px solid #6366f1" }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+        <h3 style={{ margin: 0, fontSize: "1.05rem", color: "#1a1a2e" }}>
+          Why they likely cancelled
+        </h3>
+        <span
+          style={{
+            fontSize: "0.62rem",
+            fontWeight: 700,
+            textTransform: "uppercase",
+            letterSpacing: "0.03em",
+            color: "#3730a3",
+            background: "#eef2ff",
+            border: "1px solid #c7d2fe",
+            borderRadius: 999,
+            padding: "0.1rem 0.45rem",
+          }}
+        >
+          AI · inferred
+        </span>
+        <button
+          className="transcript-toggle transcript-toggle--eval"
+          onClick={run}
+          disabled={analyzing}
+          style={{ marginLeft: "auto" }}
+          title="Have Gemini read this user's call logs and signals to infer why they cancelled"
+        >
+          {analyzing ? "Analyzing…" : analysis ? "Re-analyze" : "Analyze cancellation"}
+        </button>
+      </div>
+
+      {err && <div className="eval-error" style={{ marginTop: "0.75rem" }}>Analysis failed: {err}</div>}
+
+      {!analysis && !analyzing && !err && (
+        <p className="ret-chart-sub" style={{ marginTop: "0.5rem", marginBottom: 0 }}>
+          Reads their lesson call-logs, exit signals and notifications and infers the most
+          likely reason. It's an inference from behaviour, not a stated reason.
+        </p>
+      )}
+
+      {analysis && meta && (
+        <div style={{ marginTop: "0.85rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
+            <span
+              style={{
+                fontWeight: 700,
+                color: "#fff",
+                background: meta.color,
+                borderRadius: 999,
+                padding: "0.2rem 0.7rem",
+                fontSize: "0.9rem",
+              }}
+            >
+              {meta.label}
+            </span>
+            <span style={{ fontSize: "0.78rem", color: "#6b7280" }}>
+              {analysis.confidence} confidence
+            </span>
+          </div>
+          <p style={{ margin: "0.6rem 0 0", color: "#374151", lineHeight: 1.55 }}>
+            {analysis.summary}
+          </p>
+          {analysis.contributing_factors && analysis.contributing_factors.length > 0 && (
+            <div style={{ marginTop: "0.6rem", display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+              {analysis.contributing_factors.map((f, i) => (
+                <span
+                  key={i}
+                  style={{
+                    fontSize: "0.72rem",
+                    color: "#4b5563",
+                    background: "#f3f4f6",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 999,
+                    padding: "0.12rem 0.5rem",
+                  }}
+                >
+                  {f}
+                </span>
+              ))}
+            </div>
+          )}
+          {analysis.evidence && analysis.evidence.length > 0 && (
+            <ul style={{ margin: "0.6rem 0 0", paddingLeft: "1.1rem", color: "#6b7280", fontSize: "0.83rem", lineHeight: 1.5 }}>
+              {analysis.evidence.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          )}
+          {analyzedAt && (
+            <p className="ret-chart-sub" style={{ marginTop: "0.6rem", marginBottom: 0 }}>
+              Analyzed {format(new Date(analyzedAt), "MMM d, yyyy h:mm a")}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ lesson: c, user }) => {
   const [open, setOpen] = useState(false);
@@ -314,6 +627,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
   const [inputId, setInputId] = useState(initialUserId || "");
   const [user, setUser] = useState<UserInfo | null>(null);
   const [lessons, setLessons] = useState<CompletedLesson[]>([]);
+  const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
@@ -334,6 +648,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
     setError(null);
     setUser(null);
     setLessons([]);
+    setNotifications([]);
     setSearched(true);
 
     try {
@@ -343,7 +658,8 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
         .select(
           `user_id, preferred_name, age, gender, native_language,
            learning_language, level, reason, tutor, daily_streak, last_logged_in,
-           time_zone, attribution, demand_tier, payment_status`,
+           time_zone, attribution, demand_tier, payment_status,
+           canceled_at, last_completed_at`,
         )
         .eq("user_id", trimmed)
         .limit(1)
@@ -387,6 +703,20 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
       );
       setLessons(allLessons);
+
+      // Notifications sent to this user (non-fatal — panel shows none if it fails).
+      const { data: notifData, error: notifErr } = await supabase
+        .from("notification_log")
+        .select("id, bucket, source, status, locale, sent_at, opened_at, error_detail")
+        .eq("user_id", trimmed)
+        .order("sent_at", { ascending: false })
+        .limit(500);
+      if (notifErr) {
+        console.warn("notification_log fetch failed:", notifErr.message);
+        setNotifications([]);
+      } else {
+        setNotifications((notifData as NotificationRow[]) ?? []);
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       setError(msg);
@@ -591,6 +921,11 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
               )}
             </div>
 
+            {/* Why they likely cancelled (AI) — churned users only */}
+            {(user.payment_status === "CANCELED" || user.payment_status === "PAST_DUE") && (
+              <CancellationCard user={user} lessons={lessons} notifications={notifications} />
+            )}
+
             {/* Stats Grid */}
             <div className="metrics-grid lookup-metrics">
               <div className="metric-card">
@@ -675,6 +1010,9 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 </div>
               )}
             </div>
+
+            {/* Notifications sent to this user */}
+            <NotificationsPanel notifications={notifications} />
 
             {/* Speaking trend from word_timeline (rate / fluency / words-per-turn) */}
             <SpeakingProgress lessons={lessons} />
