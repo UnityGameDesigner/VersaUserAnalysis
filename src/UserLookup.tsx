@@ -503,6 +503,16 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
         <span className="lesson-card-date">
           {format(new Date(c.created_at), "MMM d, yyyy h:mm a")}
         </span>
+        {user.canceled_at &&
+          new Date(c.created_at).getTime() > new Date(user.canceled_at).getTime() && (
+            <span
+              className="lesson-card-badge"
+              style={{ background: "#ede9fe", color: "#6d28d9", border: "1px solid #ddd6fe" }}
+              title="This lesson was completed AFTER the user cancelled"
+            >
+              After cancel
+            </span>
+          )}
         {c.user_rating_feedback != null && (
           <span className="lesson-card-rating">
             {c.user_rating_feedback}★
@@ -1009,6 +1019,14 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                   </span>
                 </div>
               )}
+              {user.canceled_at && (
+                <div className="lookup-detail">
+                  <span className="lookup-detail-label">Cancelled</span>
+                  <span className="lookup-detail-value">
+                    {format(new Date(user.canceled_at), "MMM d, yyyy h:mm a")}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Notifications sent to this user */}
@@ -1021,6 +1039,17 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
             <div className="lookup-lessons-section">
               <h3 className="lookup-lessons-title">
                 Completed Lessons ({lessons.length})
+                {(() => {
+                  const ca = user.canceled_at;
+                  const n = ca
+                    ? lessons.filter(
+                        (l) => new Date(l.created_at).getTime() > new Date(ca).getTime(),
+                      ).length
+                    : 0;
+                  return n > 0 ? (
+                    <span style={{ color: "#6d28d9", fontWeight: 600 }}> · {n} after cancel</span>
+                  ) : null;
+                })()}
               </h3>
               {lessons.length === 0 ? (
                 <div className="empty-state">

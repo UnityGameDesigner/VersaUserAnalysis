@@ -156,6 +156,11 @@ function buildPrompt(input: CancelAnalysisInput): string {
   const p = input.profile;
   const real = input.lessons.filter((l) => l.lesson_id !== 42);
   const daysToCancel = daysBetween(p.first_lesson_at, p.canceled_at);
+  const lessonsAfterCancel = p.canceled_at
+    ? real.filter(
+        (l) => new Date(l.created_at).getTime() > new Date(p.canceled_at as string).getTime(),
+      ).length
+    : null;
 
   const profileLines = [
     p.preferred_name && `Name: ${p.preferred_name}`,
@@ -166,6 +171,11 @@ function buildPrompt(input: CancelAnalysisInput): string {
     `Daily streak at cancel: ${p.daily_streak ?? 0}`,
     `Real lessons completed (onboarding excluded): ${real.length}`,
     daysToCancel != null && `Days from first lesson to cancel: ${daysToCancel}`,
+    p.canceled_at && `Exact cancel time: ${new Date(p.canceled_at).toISOString()}`,
+    lessonsAfterCancel != null &&
+      `Lessons completed AFTER cancelling: ${lessonsAfterCancel}${
+        lessonsAfterCancel > 0 ? " (kept practising after cancelling)" : ""
+      }`,
   ].filter(Boolean);
 
   // Lesson call-logs, chronological.
