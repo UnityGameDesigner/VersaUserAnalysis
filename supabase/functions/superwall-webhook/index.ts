@@ -19,6 +19,22 @@ function mapSuperwallStatus(eventType, data) {
         }
         return "ACTIVE";
       }
+    // The trial->paid seam. product_change is what an in-trial upgrade
+    // (monthly trial -> annual, the "get your avatar now" paywall) arrives
+    // as — the store forfeits the trial and charges immediately, so the
+    // periodType of the new transaction is NORMAL -> ACTIVE. Before these
+    // cases existed the event fell to UNKNOWN and the user only kept access
+    // through the grant-only is_pro floor, with payment_status stuck wrong.
+    case "product_change":
+    case "trial_conversion":
+    case "uncancellation":
+    case "non_renewing_purchase":
+      {
+        if (periodType === "TRIAL") {
+          return "TRIAL";
+        }
+        return "ACTIVE";
+      }
     case "billing_issue":
     case "grace_period":
       return "PAST_DUE";
