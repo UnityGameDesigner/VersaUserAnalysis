@@ -356,6 +356,27 @@ serve(async (req) => {
       paymentStatus,
       rowsUpdated: updated.length
     });
+    // Stamp the FIRST time the user STARTED a trial (write-once). Mirrors the
+    // became_active_at pattern below: the `.is("trial_started_at", null)` guard
+    // means repeated TRIAL events (or a later second trial) never overwrite the
+    // original trial-start date. The transaction time is the trial start.
+    let trialStartedAt = null;
+    if (paymentStatus === "TRIAL") {
+      trialStartedAt = pickConversionTimestamp(source, body, swData, rcEvent);
+      const { error: trialErr } = await supabase.from("user_info").update({
+        trial_started_at: trialStartedAt
+      }).eq("user_id", userId).is("trial_started_at", null);
+      if (trialErr) {
+        // Non-fatal: payment_status is already updated. Log and continue.
+        console.error("Error stamping trial_started_at:", trialErr);
+      } else {
+        console.log("🔵 trial_started_at stamp (applies only if it was null):", {
+          userId,
+          trialStartedAt
+        });
+      }
+    }
+
     // Stamp the FIRST time the user became paid/ACTIVE (write-once). The
     // `.is("became_active_at", null)` guard means renewals and re-subscribes
     // never overwrite the original conversion date.
@@ -381,6 +402,7 @@ serve(async (req) => {
       userId,
       eventType: rawEventType,
       payment_status: paymentStatus,
+      trial_started_at: trialStartedAt,
       became_active_at: becameActiveAt,
       became_past_due_at: becamePastDueAt
     }), {
