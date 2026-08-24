@@ -71,7 +71,13 @@ interface DailyRow {
   median_active: number;
   max_active: number;
   partial: boolean;
+  hist: number[]; // hist[k] = # users with EXACTLY k active days (k = 0..7)
 }
+
+// Ordinal light→dark ramp for the exact-active-days stack (0 = grey "no return").
+const DAY_COLORS = ["#d1d5db", "#c7d2fe", "#a5b4fc", "#818cf8", "#6366f1", "#4f46e5", "#4338ca", "#3730a3"];
+const dayKey = (k: number) => `b${k}`;
+const dayName = (k: number) => (k === 0 ? "0 days" : k === 1 ? "1 day" : k === 7 ? "7 (full)" : `${k} days`);
 
 const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
@@ -91,9 +97,10 @@ const TrialRetention: React.FC = () => {
   const [rows, setRows] = useState<CohortRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // "Per day" (recent) view state.
-  const [recentDays, setRecentDays] = useState(20);
-  const [appliedRecent, setAppliedRecent] = useState(20);
+  // "Per day" view: a start/end date range (empty = default last 20 days).
+  const [recentFrom, setRecentFrom] = useState("");
+  const [recentTo, setRecentTo] = useState("");
+  const [appliedRange, setAppliedRange] = useState({ from: "", to: "" });
   const [dailyRows, setDailyRows] = useState<DailyRow[]>([]);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyError, setDailyError] = useState<string | null>(null);
@@ -137,12 +144,11 @@ const TrialRetention: React.FC = () => {
     fetchData();
   }, [fetchData]);
 
-  // Debounce the "last N days" input.
+  // Debounce the date-range inputs.
   useEffect(() => {
-    const n = Math.min(120, Math.max(3, Math.round(recentDays) || 3));
-    const t = setTimeout(() => setAppliedRecent(n), 500);
+    const t = setTimeout(() => setAppliedRange({ from: recentFrom, to: recentTo }), 500);
     return () => clearTimeout(t);
-  }, [recentDays]);
+  }, [recentFrom, recentTo]);
 
   // Fetch the per-day breakdown only when the "Per day" view is active.
   useEffect(() => {
@@ -151,7 +157,10 @@ const TrialRetention: React.FC = () => {
     (async () => {
       setDailyLoading(true);
       setDailyError(null);
-      const { data, error } = await supabase.rpc("trial_daily_activity", { days: appliedRecent });
+      const { data, error } = await supabase.rpc("trial_daily_activity", {
+        start_date: appliedRange.from || null,
+        end_date: appliedRange.to || null,
+      });
       if (cancelled) return;
       if (error) {
         setDailyError(error.message);
@@ -165,6 +174,7 @@ const TrialRetention: React.FC = () => {
             median_active: Number(r.median_active ?? 0),
             max_active: Number(r.max_active ?? 0),
             partial: Boolean(r.partial),
+            hist: ((r.hist as number[]) ?? []).map((v) => Number(v)),
           })),
         );
       }
@@ -173,7 +183,7 @@ const TrialRetention: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [chartType, appliedRecent]);
+  }, [chartType, appliedRange]);
 
   const effReachN = Math.min(Math.max(2, Math.round(reachN) || 2), applied.window);
 
@@ -270,18 +280,27 @@ const TrialRetention: React.FC = () => {
   const isRecent = chartType === "recent";
   const anchorNoun = isTrial ? "trial start" : "first lesson";
 
-  // Per-day view derived data.
+  // Per-day view derived data. Each row also gets b0..b7 = # users with EXACTLY
+  // that many active days (non-overlapping), for the stacked bars.
   const dailyChart = useMemo(
     () =>
-      dailyRows.map((r) => ({
-        ...r,
-        label: (() => {
-          const dt = new Date(r.d + "T00:00:00");
-          return Number.isNaN(dt.getTime()) ? r.d : format(dt, "MMM d");
-        })(),
-      })),
+      dailyRows.map((r) => {
+        const dt = new Date(r.d + "T00:00:00");
+        const buckets: Record<string, number> = {};
+        for (let k = 0; k <= 7; k++) buckets[dayKey(k)] = r.hist[k] ?? 0;
+        return { ...r, ...buckets, label: Number.isNaN(dt.getTime()) ? r.d : format(dt, "MMM d") };
+      }),
     [dailyRows],
   );
+  const rangeLabel = useMemo(() => {
+    const fmtD = (s: string) => {
+      const d = new Date(s + "T00:00:00");
+      return Number.isNaN(d.getTime()) ? s : format(d, "MMM d, ''yy");
+    };
+    const { from, to } = appliedRange;
+    if (!from && !to) return "last 20 days";
+    return `${from ? fmtD(from) : "start"} → ${to ? fmtD(to) : "today"}`;
+  }, [appliedRange]);
   const dailySummary = useMemo(() => {
     const trials = dailyRows.reduce((a, r) => a + r.trials, 0);
     const activeSum = dailyRows.reduce((a, r) => a + r.avg_active * r.trials, 0);
@@ -298,16 +317,16 @@ const TrialRetention: React.FC = () => {
         {headCount > 0 && (
           <span className="lessons-detail-count">
             {headCount.toLocaleString()} {isRecent ? "trials" : popNoun}
-            {isRecent ? ` · last ${appliedRecent} days` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
+            {isRecent ? ` · ${rangeLabel}` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
           </span>
         )}
       </h2>
       <p className="ret-chart-sub" style={{ marginTop: "0.4rem", maxWidth: "74ch" }}>
         {isRecent ? (
           <>
-            For each of the <strong>last {appliedRecent} days</strong>, the users who <strong>started a trial</strong> that
-            day and how many <strong>distinct days they were active</strong> in their 7-day trial window. Days from the
-            last week are still in progress (marked <em>partial</em>).
+            For each <strong>day</strong> in {rangeLabel}, the users who <strong>started a trial</strong> that day,
+            split into <strong>non-overlapping groups by exactly how many distinct days they were active</strong> (0–7)
+            in their 7-day trial window. Days in the last week are still in progress (<em>partial</em>).
           </>
         ) : (
           <>
@@ -360,19 +379,40 @@ const TrialRetention: React.FC = () => {
         </div>
 
         {isRecent ? (
-          <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-            Last
-            <input
-              className="filter-select"
-              type="number"
-              min={3}
-              max={120}
-              value={recentDays}
-              onChange={(e) => setRecentDays(Number(e.target.value))}
-              style={{ width: "4.5rem" }}
-            />
-            days
-          </label>
+          <>
+            <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              From
+              <input
+                className="filter-select"
+                type="date"
+                value={recentFrom}
+                min="2025-03-01"
+                max={recentTo || undefined}
+                onChange={(e) => setRecentFrom(e.target.value)}
+              />
+            </label>
+            <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              To
+              <input
+                className="filter-select"
+                type="date"
+                value={recentTo}
+                min={recentFrom || "2025-03-01"}
+                onChange={(e) => setRecentTo(e.target.value)}
+              />
+            </label>
+            {(recentFrom || recentTo) && (
+              <button
+                className="filters-clear-btn"
+                onClick={() => {
+                  setRecentFrom("");
+                  setRecentTo("");
+                }}
+              >
+                Reset
+              </button>
+            )}
+          </>
         ) : (
           <>
             <div className="ret-seg" role="group" aria-label="Population">
@@ -505,7 +545,7 @@ const TrialRetention: React.FC = () => {
         dailyLoading ? (
           <div style={{ textAlign: "center", padding: "3rem" }}>
             <div className="loading-spinner"></div>
-            <p className="loading-text">Loading the last {appliedRecent} days…</p>
+            <p className="loading-text">Loading {rangeLabel}…</p>
           </div>
         ) : dailyError ? (
           <div className="error-box" style={{ margin: "1rem 0" }}>
@@ -513,7 +553,7 @@ const TrialRetention: React.FC = () => {
           </div>
         ) : dailyRows.length === 0 ? (
           <div className="empty-state" style={{ padding: "2rem" }}>
-            No trials started in the last {appliedRecent} days.
+            No trials started in {rangeLabel}. {(recentFrom || recentTo) ? "Try a wider range — note ~Mar–Jun 2026 has almost no trial data (the identify() gap)." : ""}
           </div>
         ) : (
           <>
@@ -524,7 +564,7 @@ const TrialRetention: React.FC = () => {
               <div className="metric-card">
                 <div className="metric-value">{dailySummary.trials.toLocaleString()}</div>
                 <div className="metric-label">Trials Started</div>
-                <div className="metric-description">Last {appliedRecent} days</div>
+                <div className="metric-description">{rangeLabel}</div>
               </div>
               <div className="metric-card">
                 <div className="metric-value">{dailySummary.avgActive.toFixed(2)}</div>
@@ -549,32 +589,60 @@ const TrialRetention: React.FC = () => {
 
             <div className="chart-container" style={{ marginTop: "1.25rem" }}>
               <div className="ret-chart-head">
-                <h3>Avg active days per trial-start day</h3>
+                <h3>Trials by exact active-days, per day</h3>
               </div>
               <p className="ret-chart-sub">
-                Each bar = the users who started a trial that day, and the average distinct days they were active in
-                their 7-day trial window. Faded bars are still in progress (partial). Hover for detail.
+                Each bar = the users who started a trial that day, stacked into <strong>non-overlapping</strong> groups by
+                exactly how many distinct days they were active (0–7) in their 7-day trial window — a 4-day user is only in
+                the “4 days” slice. Darker = more days; faded bars are still in progress (partial). Hover for the breakdown.
               </p>
-              <div style={{ width: "100%", height: 300 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem 0.9rem", margin: "0 0 0.6rem", fontSize: 12, color: "#52514e" }}>
+                {Array.from({ length: 8 }, (_, k) => (
+                  <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
+                    <span style={{ width: 11, height: 11, borderRadius: 3, background: DAY_COLORS[k], display: "inline-block" }} />
+                    {dayName(k)}
+                  </span>
+                ))}
+              </div>
+              <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
                   <BarChart data={dailyChart} margin={{ top: 12, right: 20, bottom: 8, left: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={8} />
-                    <YAxis tick={{ fontSize: 12 }} width={40} />
+                    <YAxis tick={{ fontSize: 12 }} width={40} allowDecimals={false} />
                     <Tooltip
-                      formatter={(v: number | undefined) => [`${v ?? 0} days`, "Avg active"]}
-                      labelFormatter={(l) => {
-                        const row = dailyChart.find((r) => r.label === String(l));
-                        return row ? `${String(l)} · ${row.trials} trials${row.partial ? " · partial" : ""}` : String(l);
-                      }}
-                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
                       cursor={{ fill: "rgba(79,70,229,0.06)" }}
+                      content={(props) => {
+                        const { active, payload, label } = props as unknown as {
+                          active?: boolean;
+                          label?: unknown;
+                          payload?: Array<{ name?: string; value?: number; color?: string }>;
+                        };
+                        if (!active || !payload || payload.length === 0) return null;
+                        const row = dailyChart.find((r) => r.label === String(label));
+                        const items = payload.filter((p) => Number(p.value) > 0).reverse();
+                        return (
+                          <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 10px", fontSize: 12, boxShadow: "0 2px 10px rgba(0,0,0,.1)" }}>
+                            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                              {String(label)} · {row?.trials ?? 0} trials{row?.partial ? " (partial)" : ""}
+                            </div>
+                            {items.map((p, i) => (
+                              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <span style={{ width: 10, height: 10, borderRadius: 2, background: p.color, display: "inline-block" }} />
+                                {p.name}: {p.value}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      }}
                     />
-                    <Bar dataKey="avg_active" radius={[4, 4, 0, 0]} isAnimationActive={false}>
-                      {dailyChart.map((r, i) => (
-                        <Cell key={i} fill={r.partial ? "#c7d2fe" : "#4f46e5"} />
-                      ))}
-                    </Bar>
+                    {Array.from({ length: 8 }, (_, k) => (
+                      <Bar key={k} dataKey={dayKey(k)} name={dayName(k)} stackId="d" fill={DAY_COLORS[k]} isAnimationActive={false}>
+                        {dailyChart.map((r, i) => (
+                          <Cell key={i} fillOpacity={r.partial ? 0.55 : 1} />
+                        ))}
+                      </Bar>
+                    ))}
                   </BarChart>
                 </ResponsiveContainer>
               </div>
