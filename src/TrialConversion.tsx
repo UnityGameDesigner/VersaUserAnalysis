@@ -154,7 +154,7 @@ const TrialConversion: React.FC = () => {
       ) : (
         <>
           {summary && (
-            <section className="metrics-grid" style={{ marginTop: "1rem" }}>
+            <section className="metrics-grid" style={{ marginTop: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
               <div className="metric-card">
                 <div className="metric-value">{summary.rate.toFixed(1)}%</div>
                 <div className="metric-label">Overall Conversion</div>

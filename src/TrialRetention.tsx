@@ -5,6 +5,7 @@ import {
   Line,
   BarChart,
   Bar,
+  Cell,
   LabelList,
   XAxis,
   YAxis,
@@ -63,10 +64,20 @@ function cohortLabel(iso: string, gran: Gran): string {
   return format(d, "MMM d"); // week (anchored on its Monday)
 }
 
+interface DailyRow {
+  d: string;
+  trials: number;
+  avg_active: number;
+  median_active: number;
+  max_active: number;
+  partial: boolean;
+}
+
 const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
-  // timeframe); "trend" = the metric over time (cohort line).
-  const [chartType, setChartType] = useState<"bars" | "trend">("bars");
+  // timeframe); "trend" = the metric over time (cohort line); "recent" = a
+  // per-day breakdown of the last N days (trial cohort engagement, no min-size).
+  const [chartType, setChartType] = useState<"bars" | "trend" | "recent">("bars");
   const [windowDays, setWindowDays] = useState(7); // default = the 7-day trial length
   const [gran, setGran] = useState<Gran>("month");
   const [metric, setMetric] = useState<Metric>("return");
@@ -80,6 +91,12 @@ const TrialRetention: React.FC = () => {
   const [rows, setRows] = useState<CohortRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // "Per day" (recent) view state.
+  const [recentDays, setRecentDays] = useState(20);
+  const [appliedRecent, setAppliedRecent] = useState(20);
+  const [dailyRows, setDailyRows] = useState<DailyRow[]>([]);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyError, setDailyError] = useState<string | null>(null);
 
   // Debounce the window input; granularity applies immediately.
   useEffect(() => {
@@ -119,6 +136,44 @@ const TrialRetention: React.FC = () => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Debounce the "last N days" input.
+  useEffect(() => {
+    const n = Math.min(120, Math.max(3, Math.round(recentDays) || 3));
+    const t = setTimeout(() => setAppliedRecent(n), 500);
+    return () => clearTimeout(t);
+  }, [recentDays]);
+
+  // Fetch the per-day breakdown only when the "Per day" view is active.
+  useEffect(() => {
+    if (chartType !== "recent") return;
+    let cancelled = false;
+    (async () => {
+      setDailyLoading(true);
+      setDailyError(null);
+      const { data, error } = await supabase.rpc("trial_daily_activity", { days: appliedRecent });
+      if (cancelled) return;
+      if (error) {
+        setDailyError(error.message);
+        setDailyRows([]);
+      } else {
+        setDailyRows(
+          (data ?? []).map((r: Record<string, unknown>) => ({
+            d: String(r.d),
+            trials: Number(r.trials ?? 0),
+            avg_active: Number(r.avg_active ?? 0),
+            median_active: Number(r.median_active ?? 0),
+            max_active: Number(r.max_active ?? 0),
+            partial: Boolean(r.partial),
+          })),
+        );
+      }
+      setDailyLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chartType, appliedRecent]);
 
   const effReachN = Math.min(Math.max(2, Math.round(reachN) || 2), applied.window);
 
@@ -212,8 +267,29 @@ const TrialRetention: React.FC = () => {
   // For a retention metric, up is good.
   const trendDir = summary && summary.delta > 0.01 ? "up" : summary && summary.delta < -0.01 ? "down" : "flat";
   const isBars = chartType === "bars";
-  const headCount = isBars ? barData.totalUsers : summary?.totalUsers ?? 0;
+  const isRecent = chartType === "recent";
   const anchorNoun = isTrial ? "trial start" : "first lesson";
+
+  // Per-day view derived data.
+  const dailyChart = useMemo(
+    () =>
+      dailyRows.map((r) => ({
+        ...r,
+        label: (() => {
+          const dt = new Date(r.d + "T00:00:00");
+          return Number.isNaN(dt.getTime()) ? r.d : format(dt, "MMM d");
+        })(),
+      })),
+    [dailyRows],
+  );
+  const dailySummary = useMemo(() => {
+    const trials = dailyRows.reduce((a, r) => a + r.trials, 0);
+    const activeSum = dailyRows.reduce((a, r) => a + r.avg_active * r.trials, 0);
+    const busiest = dailyRows.reduce<DailyRow | null>((b, r) => (!b || r.trials > b.trials ? r : b), null);
+    return { trials, avgActive: trials ? activeSum / trials : 0, busiest, days: dailyRows.length };
+  }, [dailyRows]);
+
+  const headCount = isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
 
   return (
     <div className="lessons-detail" style={{ padding: "1.5rem" }}>
@@ -221,25 +297,35 @@ const TrialRetention: React.FC = () => {
         Trial Retention
         {headCount > 0 && (
           <span className="lessons-detail-count">
-            {headCount.toLocaleString()} {popNoun}
-            {!isBars && summary ? ` · ${summary.count} cohorts` : ""}
+            {headCount.toLocaleString()} {isRecent ? "trials" : popNoun}
+            {isRecent ? ` · last ${appliedRecent} days` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
           </span>
         )}
       </h2>
       <p className="ret-chart-sub" style={{ marginTop: "0.4rem", maxWidth: "74ch" }}>
-        Among <strong>{popNoun}</strong>{" "}
-        {isTrial
-          ? "(users with a recorded trial start, from Superwall)"
-          : "(everyone who completed ≥1 lesson, most of whom never started a trial)"}
-        {isBars ? (
+        {isRecent ? (
           <>
-            , the bars show <strong>how many used the app on ≥N distinct days</strong> within their first{" "}
-            {applied.window} days of their {anchorNoun} — the trial-engagement funnel, pooled over the selected timeline.
+            For each of the <strong>last {appliedRecent} days</strong>, the users who <strong>started a trial</strong> that
+            day and how many <strong>distinct days they were active</strong> in their 7-day trial window. Days from the
+            last week are still in progress (marked <em>partial</em>).
           </>
         ) : (
           <>
-            , grouped by the {applied.gran} of their <strong>{anchorNoun}</strong>, the line tracks{" "}
-            {METRICS[metric].blurb(effReachN, applied.window)} Rising = retention improving.
+            Among <strong>{popNoun}</strong>{" "}
+            {isTrial
+              ? "(users with a recorded trial start, from Superwall)"
+              : "(everyone who completed ≥1 lesson, most of whom never started a trial)"}
+            {isBars ? (
+              <>
+                , the bars show <strong>how many used the app on ≥N distinct days</strong> within their first{" "}
+                {applied.window} days of their {anchorNoun} — the trial-engagement funnel, pooled over the selected timeline.
+              </>
+            ) : (
+              <>
+                , grouped by the {applied.gran} of their <strong>{anchorNoun}</strong>, the line tracks{" "}
+                {METRICS[metric].blurb(effReachN, applied.window)} Rising = retention improving.
+              </>
+            )}
           </>
         )}
       </p>
@@ -264,36 +350,62 @@ const TrialRetention: React.FC = () => {
           >
             Over time
           </button>
-        </div>
-        <div className="ret-seg" role="group" aria-label="Population">
           <button
-            className={`ret-seg-btn${population === "trial" ? " ret-seg-btn--on" : ""}`}
-            onClick={() => setPopulation("trial")}
-            title="Only users with a recorded trial start (user_info.trial_started_at), anchored on the trial-start date"
+            className={`ret-seg-btn${chartType === "recent" ? " ret-seg-btn--on" : ""}`}
+            onClick={() => setChartType("recent")}
+            title="Per-day breakdown of the last N days — each day's trial cohort and how many days they were active"
           >
-            Trial starters
-          </button>
-          <button
-            className={`ret-seg-btn${population === "all" ? " ret-seg-btn--on" : ""}`}
-            onClick={() => setPopulation("all")}
-            title="Everyone who completed at least one lesson (whole funnel, mostly free users)"
-          >
-            All app users
+            Per day
           </button>
         </div>
-        <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-          First
-          <input
-            className="filter-select"
-            type="number"
-            min={2}
-            max={90}
-            value={windowDays}
-            onChange={(e) => setWindowDays(Number(e.target.value))}
-            style={{ width: "4.5rem" }}
-          />
-          days
-        </label>
+
+        {isRecent ? (
+          <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+            Last
+            <input
+              className="filter-select"
+              type="number"
+              min={3}
+              max={120}
+              value={recentDays}
+              onChange={(e) => setRecentDays(Number(e.target.value))}
+              style={{ width: "4.5rem" }}
+            />
+            days
+          </label>
+        ) : (
+          <>
+            <div className="ret-seg" role="group" aria-label="Population">
+              <button
+                className={`ret-seg-btn${population === "trial" ? " ret-seg-btn--on" : ""}`}
+                onClick={() => setPopulation("trial")}
+                title="Only users with a recorded trial start (user_info.trial_started_at), anchored on the trial-start date"
+              >
+                Trial starters
+              </button>
+              <button
+                className={`ret-seg-btn${population === "all" ? " ret-seg-btn--on" : ""}`}
+                onClick={() => setPopulation("all")}
+                title="Everyone who completed at least one lesson (whole funnel, mostly free users)"
+              >
+                All app users
+              </button>
+            </div>
+            <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              First
+              <input
+                className="filter-select"
+                type="number"
+                min={2}
+                max={90}
+                value={windowDays}
+                onChange={(e) => setWindowDays(Number(e.target.value))}
+                style={{ width: "4.5rem" }}
+              />
+              days
+            </label>
+          </>
+        )}
 
         {chartType === "trend" && (
           <>
@@ -340,7 +452,8 @@ const TrialRetention: React.FC = () => {
         )}
       </div>
 
-      {/* Date range */}
+      {/* Date range (hidden in the per-day view — it has its own last-N-days window) */}
+      {!isRecent && (
       <div
         className="controls-bar"
         style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap", marginTop: "0.6rem" }}
@@ -380,6 +493,7 @@ const TrialRetention: React.FC = () => {
           </button>
         )}
       </div>
+      )}
 
       {error && (
         <div className="error-box" style={{ margin: "1rem 0" }}>
@@ -387,7 +501,126 @@ const TrialRetention: React.FC = () => {
         </div>
       )}
 
-      {loading ? (
+      {isRecent ? (
+        dailyLoading ? (
+          <div style={{ textAlign: "center", padding: "3rem" }}>
+            <div className="loading-spinner"></div>
+            <p className="loading-text">Loading the last {appliedRecent} days…</p>
+          </div>
+        ) : dailyError ? (
+          <div className="error-box" style={{ margin: "1rem 0" }}>
+            <p>Failed to load: {dailyError}</p>
+          </div>
+        ) : dailyRows.length === 0 ? (
+          <div className="empty-state" style={{ padding: "2rem" }}>
+            No trials started in the last {appliedRecent} days.
+          </div>
+        ) : (
+          <>
+            <section
+              className="metrics-grid"
+              style={{ marginTop: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}
+            >
+              <div className="metric-card">
+                <div className="metric-value">{dailySummary.trials.toLocaleString()}</div>
+                <div className="metric-label">Trials Started</div>
+                <div className="metric-description">Last {appliedRecent} days</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{dailySummary.avgActive.toFixed(2)}</div>
+                <div className="metric-label">Avg Active Days</div>
+                <div className="metric-description">In the 7-day trial window</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">
+                  {dailySummary.busiest ? format(new Date(dailySummary.busiest.d + "T00:00:00"), "MMM d") : "—"}
+                </div>
+                <div className="metric-label">Busiest Day</div>
+                <div className="metric-description">
+                  {dailySummary.busiest ? `${dailySummary.busiest.trials} trials started` : ""}
+                </div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{dailySummary.days}</div>
+                <div className="metric-label">Days Shown</div>
+                <div className="metric-description">One bar &amp; row per day</div>
+              </div>
+            </section>
+
+            <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+              <div className="ret-chart-head">
+                <h3>Avg active days per trial-start day</h3>
+              </div>
+              <p className="ret-chart-sub">
+                Each bar = the users who started a trial that day, and the average distinct days they were active in
+                their 7-day trial window. Faded bars are still in progress (partial). Hover for detail.
+              </p>
+              <div style={{ width: "100%", height: 300 }}>
+                <ResponsiveContainer>
+                  <BarChart data={dailyChart} margin={{ top: 12, right: 20, bottom: 8, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={8} />
+                    <YAxis tick={{ fontSize: 12 }} width={40} />
+                    <Tooltip
+                      formatter={(v: number | undefined) => [`${v ?? 0} days`, "Avg active"]}
+                      labelFormatter={(l) => {
+                        const row = dailyChart.find((r) => r.label === String(l));
+                        return row ? `${String(l)} · ${row.trials} trials${row.partial ? " · partial" : ""}` : String(l);
+                      }}
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      cursor={{ fill: "rgba(79,70,229,0.06)" }}
+                    />
+                    <Bar dataKey="avg_active" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                      {dailyChart.map((r, i) => (
+                        <Cell key={i} fill={r.partial ? "#c7d2fe" : "#4f46e5"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="table-container" style={{ marginTop: "1rem" }}>
+              <table className="data-table">
+                <thead className="table-head">
+                  <tr>
+                    <th>Trial start day</th>
+                    <th>Trials</th>
+                    <th title="Avg distinct active days in the 7-day trial window">Avg days</th>
+                    <th>Median</th>
+                    <th>Max</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody className="table-body">
+                  {[...dailyChart].reverse().map((r) => (
+                    <tr key={r.d}>
+                      <td>{r.label}</td>
+                      <td>{r.trials}</td>
+                      <td>{r.avg_active.toFixed(2)}</td>
+                      <td>{r.median_active}</td>
+                      <td>{r.max_active}</td>
+                      <td>
+                        {r.partial ? (
+                          <span className="plan-pill plan-pill--trial">partial</span>
+                        ) : (
+                          ""
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <p className="ret-chart-sub" style={{ marginTop: "0.75rem", maxWidth: "80ch" }}>
+              <strong>Read with care:</strong> daily trial volume is small (~5–20/day), so single-day averages are
+              noisy. Days within the last 7 are <em>partial</em> — their 7-day trial window hasn't finished, so their
+              active-day counts will still rise.
+            </p>
+          </>
+        )
+      ) : loading ? (
         <div style={{ textAlign: "center", padding: "3rem" }}>
           <div className="loading-spinner"></div>
           <p className="loading-text">Computing first-{applied.window}-day trial retention…</p>
@@ -399,7 +632,7 @@ const TrialRetention: React.FC = () => {
           </div>
         ) : (
           <>
-            <section className="metrics-grid" style={{ marginTop: "1rem" }}>
+            <section className="metrics-grid" style={{ marginTop: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
               <div className="metric-card">
                 <div className="metric-value">{barData.totalUsers.toLocaleString()}</div>
                 <div className="metric-label">{isTrial ? "Trial Starters" : "App Users"}</div>
@@ -467,7 +700,7 @@ const TrialRetention: React.FC = () => {
         <>
           {/* Headline */}
           {summary && (
-            <section className="metrics-grid" style={{ marginTop: "1rem" }}>
+            <section className="metrics-grid" style={{ marginTop: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
               <div className="metric-card">
                 <div className="metric-value">
                   {fmt(summary.latest.value)}
