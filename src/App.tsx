@@ -12,6 +12,8 @@ import Evaluations from "./Evaluations";
 import RecentUsers from "./RecentUsers";
 import CancelledTrials from "./CancelledTrials";
 import TutorComparison from "./TutorComparison";
+import TrialRetention from "./TrialRetention";
+import TrialConversion from "./TrialConversion";
 import CancelReasons from "./CancelReasons";
 
 interface NavState {
@@ -19,12 +21,12 @@ interface NavState {
   lookupUserId: string | null;
 }
 
-type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "feedback" | "retention" | "cancelled-trials" | "cancel-reasons" | "tutor-comparison" | "user-lookup" | "ab-compare";
+type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "feedback" | "retention" | "trial-retention" | "trial-conversion" | "cancelled-trials" | "cancel-reasons" | "tutor-comparison" | "user-lookup" | "ab-compare";
 
 function stateFromHash(): NavState {
   const hash = window.location.hash.replace("#", "");
   const [tab, userId] = hash.split(":");
-  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "feedback", "retention", "cancelled-trials", "cancel-reasons", "tutor-comparison", "user-lookup", "ab-compare"];
+  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "feedback", "retention", "trial-retention", "trial-conversion", "cancelled-trials", "cancel-reasons", "tutor-comparison", "user-lookup", "ab-compare"];
   return {
     tab: validTabs.includes(tab as Tab) ? (tab as Tab) : "dashboard",
     lookupUserId: userId || null,
@@ -132,6 +134,18 @@ const App: React.FC = () => {
             Retention
           </button>
           <button
+            className={`sidebar-nav-btn${activeTab === "trial-retention" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("trial-retention")}
+          >
+            Trial Retention
+          </button>
+          <button
+            className={`sidebar-nav-btn${activeTab === "trial-conversion" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("trial-conversion")}
+          >
+            Trial Conversion
+          </button>
+          <button
             className={`sidebar-nav-btn${activeTab === "cancelled-trials" ? " sidebar-nav-btn--active" : ""}`}
             onClick={() => navigate("cancelled-trials")}
           >
@@ -180,7 +194,7 @@ const App: React.FC = () => {
         ) : activeTab === "transcripts" ? (
           <div className="dashboard-container">
             <div className="dashboard-inner">
-              <AllTranscripts onUserClick={handleUserClick} />
+              <AllTranscripts />
             </div>
           </div>
         ) : activeTab === "saved" ? (
@@ -203,6 +217,18 @@ const App: React.FC = () => {
           </div>
         ) : activeTab === "retention" ? (
           <RetentionAnalysis onUserClick={handleUserClick} />
+        ) : activeTab === "trial-retention" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <TrialRetention />
+            </div>
+          </div>
+        ) : activeTab === "trial-conversion" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <TrialConversion />
+            </div>
+          </div>
         ) : activeTab === "cancelled-trials" ? (
           <div className="dashboard-container">
             <div className="dashboard-inner">

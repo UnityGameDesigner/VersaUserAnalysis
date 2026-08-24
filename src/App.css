@@ -1568,7 +1568,8 @@ body,
   cursor: default;
 }
 
-.lesson-card-user--clickable {
+.lesson-card-user--clickable,
+.lesson-card-user--clickable:visited {
   cursor: pointer;
   color: #6366f1;
   text-decoration: underline;

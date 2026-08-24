@@ -485,10 +485,9 @@ function buildUserGroups(user: UserMeta): UserGroup[] {
 const TranscriptCard: React.FC<{
   row: TranscriptRow;
   user?: UserMeta;
-  onUserClick?: (userId: string) => void;
   selected: boolean;
   onToggleSelect: (row: TranscriptRow) => void;
-}> = ({ row, user, onUserClick, selected, onToggleSelect }) => {
+}> = ({ row, user, selected, onToggleSelect }) => {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
@@ -649,13 +648,15 @@ const TranscriptCard: React.FC<{
           title="Select for CSV export"
           aria-label={`Select lesson ${row.lesson_id} transcript for export`}
         />
-        <button
+        <a
           className="lesson-card-user lesson-card-user--clickable"
-          title={`View all lessons for ${row.user_id}`}
-          onClick={() => onUserClick?.(row.user_id)}
+          title={`Open all lessons for ${row.user_id} in a new tab`}
+          href={`#user-lookup:${row.user_id}`}
+          target="_blank"
+          rel="noopener noreferrer"
         >
           {row.user_id.slice(0, 8) + "…"}
-        </button>
+        </a>
         <span className="lesson-card-lesson-id">Lesson #{row.lesson_id}</span>
         <span className="lesson-card-date">
           {format(new Date(row.created_at), "MMM d, yyyy h:mm a")}
@@ -894,11 +895,7 @@ const TranscriptCard: React.FC<{
   );
 };
 
-interface Props {
-  onUserClick?: (userId: string) => void;
-}
-
-const AllTranscripts: React.FC<Props> = ({ onUserClick }) => {
+const AllTranscripts: React.FC = () => {
   const [rows, setRows] = useState<TranscriptRow[]>([]);
   const [userMeta, setUserMeta] = useState<Map<string, UserMeta>>(new Map());
   const [loading, setLoading] = useState(false);
@@ -1617,7 +1614,6 @@ const AllTranscripts: React.FC<Props> = ({ onUserClick }) => {
             key={r.id}
             row={r}
             user={userMeta.get(r.user_id)}
-            onUserClick={onUserClick}
             selected={selected.has(r.id)}
             onToggleSelect={toggleSelect}
           />
