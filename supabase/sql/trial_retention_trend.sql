@@ -3,20 +3,19 @@
 -- Retention trend by signup cohort, to see whether product changes are moving
 -- how long trial users stick around.
 --
--- Cohort anchor = a user's FIRST completed lesson (their first app usage), since
--- the DB has no reliable trial-start timestamp (Superwall runs trials; user_info
--- has no signup date; user_account_info is a stale 1.3k-row table ending
--- Apr-2025; user_metadata.trial_start is sparse).
+-- trial_only (default true): TRIAL VIEW — population = users with a real
+-- user_info.trial_started_at (backfilled from Superwall + maintained by the
+-- webhook, ~2.3k users), and each cohort is anchored on that ACTUAL trial-start
+-- date. Activity is measured in the first `window_days` FROM trial start, so a
+-- trial user with no lessons in that window counts as 0 active days (LEFT join).
+-- Coverage caveat: trials started while Superwall identify() was disabled
+-- (~Mar–Jun 2026) were anonymous and lack trial_started_at, so those cohorts are
+-- sparse/missing.
 --
--- trial_only (default true): restrict the cohort universe to users who ever
--- entered the trial/subscription funnel — current user_info.payment_status in
--- (TRIAL, ACTIVE, CANCELED, PAST_DUE, EXPIRED), ~2.9k users. This is the honest
--- "trial retention" population. With trial_only = false the cohort is EVERY user
--- with a lesson (~178k), i.e. whole-funnel engagement retention — that view is
--- dominated by free users who never started a trial (only ~1.5% of app-starters
--- ever reach the trial funnel), so their retention masks the trial signal.
--- Note: "TRIAL" is never written to completed_lessons.payment_status, so the
--- funnel set must come from user_info.payment_status, not the per-lesson snapshot.
+-- trial_only = false: ALL-USERS VIEW — anchor = a user's FIRST completed lesson
+-- (first app use), every user with a lesson (~178k). Whole-funnel engagement
+-- retention, dominated by free users who never started a trial — that view masks
+-- the trial signal, so it's the fallback, not the default.
 --
 -- Per cohort, within each user's first `window_days` days:
 --   users         — cohort size (only users whose full window has elapsed)
@@ -42,27 +41,32 @@ create or replace function public.trial_retention_trend(
 )
 returns table(cohort date, users int, median_active numeric, ge_counts int[])
 language sql stable as $$
-  with firsts as (
+  with anchors as (
+    -- trial mode: anchor = actual trial start; population = users with a trial start
+    select u.user_id, u.trial_started_at as first_at
+    from user_info u
+    where trial_only and u.trial_started_at is not null
+    union all
+    -- all mode: anchor = first app use (first completed lesson), every user
     select cl.user_id, min(cl.created_at) as first_at
     from completed_lessons cl
-    where (not trial_only) or exists (
-      select 1 from user_info u
-      where u.user_id = cl.user_id
-        and u.payment_status in ('TRIAL','ACTIVE','CANCELED','PAST_DUE','EXPIRED')
-    )
+    where not trial_only
     group by cl.user_id
   ),
   per_user as (
-    select date_trunc(gran, f.first_at)::date as cohort,
+    -- LEFT join so a trial user with no lessons in the window counts as 0 active
+    -- days. In all-mode the anchor is a lesson, so every user still has >= 1.
+    select date_trunc(gran, a.first_at)::date as cohort,
+      a.user_id,
       count(distinct ((cl.created_at at time zone 'UTC')::date)) as active_days
-    from firsts f
-    join completed_lessons cl
-      on cl.user_id = f.user_id
-     and cl.created_at >= f.first_at
-     and cl.created_at < f.first_at + make_interval(days => window_days)
-    where f.first_at >= '2025-01-01'
-      and f.first_at < (now() - make_interval(days => window_days))
-    group by f.user_id, date_trunc(gran, f.first_at)
+    from anchors a
+    left join completed_lessons cl
+      on cl.user_id = a.user_id
+     and cl.created_at >= a.first_at
+     and cl.created_at < a.first_at + make_interval(days => window_days)
+    where a.first_at >= '2025-01-01'
+      and a.first_at < (now() - make_interval(days => window_days))
+    group by a.user_id, date_trunc(gran, a.first_at)
   ),
   hist as (   -- at most (cohorts x window) rows, not (users x window)
     select cohort, active_days, count(*)::int as c

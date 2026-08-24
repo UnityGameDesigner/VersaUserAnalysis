@@ -3,6 +3,9 @@ import { supabase } from "./lib/supabase";
 import {
   LineChart,
   Line,
+  BarChart,
+  Bar,
+  LabelList,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -61,7 +64,10 @@ function cohortLabel(iso: string, gran: Gran): string {
 }
 
 const TrialRetention: React.FC = () => {
-  const [windowDays, setWindowDays] = useState(14);
+  // "bars" = how many users reached ≥N distinct active days (pooled over the
+  // timeframe); "trend" = the metric over time (cohort line).
+  const [chartType, setChartType] = useState<"bars" | "trend">("bars");
+  const [windowDays, setWindowDays] = useState(7); // default = the 7-day trial length
   const [gran, setGran] = useState<Gran>("month");
   const [metric, setMetric] = useState<Metric>("return");
   const [reachN, setReachN] = useState(3);
@@ -70,7 +76,7 @@ const TrialRetention: React.FC = () => {
   // Cohort date range shown (empty string = open-ended in that direction).
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
-  const [applied, setApplied] = useState({ window: 14, gran: "month" as Gran, population: "trial" as Population });
+  const [applied, setApplied] = useState({ window: 7, gran: "month" as Gran, population: "trial" as Population });
   const [rows, setRows] = useState<CohortRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -116,12 +122,13 @@ const TrialRetention: React.FC = () => {
 
   const effReachN = Math.min(Math.max(2, Math.round(reachN) || 2), applied.window);
 
-  // Cohorts big enough to show (RPC returns them ordered by cohort asc).
+  // Cohorts big enough to show in the time-trend line (RPC returns them asc).
   const shownRows = useMemo(() => rows.filter((r) => r.users >= MIN_USERS), [rows]);
-  // Available date bounds, used for the range inputs and presets.
+  // Date bounds for the range inputs — from ALL cohorts so the timeline covers
+  // everything (the bar view pools every trial, not just big cohorts).
   const bounds = useMemo(
-    () => (shownRows.length ? { min: shownRows[0].cohort, max: shownRows[shownRows.length - 1].cohort } : null),
-    [shownRows],
+    () => (rows.length ? { min: rows[0].cohort, max: rows[rows.length - 1].cohort } : null),
+    [rows],
   );
 
   const applyPreset = (months: number | null) => {
@@ -155,6 +162,34 @@ const TrialRetention: React.FC = () => {
 
   const unit = METRICS[metric].unit;
 
+  // Days-reached bar chart: pool EVERY trial in the timeframe (no per-cohort size
+  // filter, so day/week/month and daily sparsity are irrelevant) and count how
+  // many reached ≥ k distinct active days, for k = 1..window.
+  const rangeRows = useMemo(
+    () => rows.filter((r) => (!fromDate || r.cohort >= fromDate) && (!toDate || r.cohort <= toDate)),
+    [rows, fromDate, toDate],
+  );
+  const barData = useMemo(() => {
+    const W = applied.window;
+    const totalUsers = rangeRows.reduce((a, r) => a + r.users, 0);
+    const ge = new Array(W).fill(0);
+    let sumDays = 0;
+    for (const r of rangeRows) {
+      for (let k = 0; k < W; k++) {
+        const c = r.ge_counts[k] ?? 0;
+        ge[k] += c;
+        sumDays += c;
+      }
+    }
+    const bars = ge.map((count, i) => ({
+      day: i + 1,
+      label: `≥${i + 1}`,
+      count,
+      pct: totalUsers ? Math.round((1000 * count) / totalUsers) / 10 : 0,
+    }));
+    return { totalUsers, bars, avgDays: totalUsers ? sumDays / totalUsers : 0 };
+  }, [rangeRows, applied.window]);
+
   // Headline: latest value, trend (last 3 cohorts vs previous 3), and peak.
   const summary = useMemo(() => {
     const vals = chartData.map((d) => d.value);
@@ -176,24 +211,37 @@ const TrialRetention: React.FC = () => {
   const fmt = (v: number) => (metric === "avg" ? v.toFixed(2) : `${Math.round(v * 10) / 10}${unit}`);
   // For a retention metric, up is good.
   const trendDir = summary && summary.delta > 0.01 ? "up" : summary && summary.delta < -0.01 ? "down" : "flat";
+  const isBars = chartType === "bars";
+  const headCount = isBars ? barData.totalUsers : summary?.totalUsers ?? 0;
+  const anchorNoun = isTrial ? "trial start" : "first lesson";
 
   return (
     <div className="lessons-detail" style={{ padding: "1.5rem" }}>
       <h2 className="lessons-detail-title" style={{ margin: 0 }}>
         Trial Retention
-        {summary && (
+        {headCount > 0 && (
           <span className="lessons-detail-count">
-            {summary.totalUsers.toLocaleString()} {popNoun} · {summary.count} cohorts
+            {headCount.toLocaleString()} {popNoun}
+            {!isBars && summary ? ` · ${summary.count} cohorts` : ""}
           </span>
         )}
       </h2>
-      <p className="ret-chart-sub" style={{ marginTop: "0.4rem", maxWidth: "72ch" }}>
+      <p className="ret-chart-sub" style={{ marginTop: "0.4rem", maxWidth: "74ch" }}>
         Among <strong>{popNoun}</strong>{" "}
         {isTrial
-          ? "(users who ever entered the trial funnel — Superwall status TRIAL / ACTIVE / CANCELED / PAST_DUE / EXPIRED)"
+          ? "(users with a recorded trial start, from Superwall)"
           : "(everyone who completed ≥1 lesson, most of whom never started a trial)"}
-        , grouped by the {applied.gran} of their <strong>first lesson</strong>, the line tracks{" "}
-        {METRICS[metric].blurb(effReachN, applied.window)} Rising = retention improving.
+        {isBars ? (
+          <>
+            , the bars show <strong>how many used the app on ≥N distinct days</strong> within their first{" "}
+            {applied.window} days of their {anchorNoun} — the trial-engagement funnel, pooled over the selected timeline.
+          </>
+        ) : (
+          <>
+            , grouped by the {applied.gran} of their <strong>{anchorNoun}</strong>, the line tracks{" "}
+            {METRICS[metric].blurb(effReachN, applied.window)} Rising = retention improving.
+          </>
+        )}
       </p>
 
       {/* Controls */}
@@ -201,11 +249,27 @@ const TrialRetention: React.FC = () => {
         className="controls-bar"
         style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", marginTop: "1rem" }}
       >
+        <div className="ret-seg" role="group" aria-label="Chart type">
+          <button
+            className={`ret-seg-btn${chartType === "bars" ? " ret-seg-btn--on" : ""}`}
+            onClick={() => setChartType("bars")}
+            title="How many users reached ≥N distinct active days, pooled over the timeline"
+          >
+            Days reached
+          </button>
+          <button
+            className={`ret-seg-btn${chartType === "trend" ? " ret-seg-btn--on" : ""}`}
+            onClick={() => setChartType("trend")}
+            title="A retention metric over time (cohort line)"
+          >
+            Over time
+          </button>
+        </div>
         <div className="ret-seg" role="group" aria-label="Population">
           <button
             className={`ret-seg-btn${population === "trial" ? " ret-seg-btn--on" : ""}`}
             onClick={() => setPopulation("trial")}
-            title="Only users who ever started a trial (Superwall status TRIAL/ACTIVE/CANCELED/PAST_DUE/EXPIRED)"
+            title="Only users with a recorded trial start (user_info.trial_started_at), anchored on the trial-start date"
           >
             Trial starters
           </button>
@@ -231,45 +295,49 @@ const TrialRetention: React.FC = () => {
           days
         </label>
 
-        <div className="ret-seg" role="group" aria-label="Metric">
-          {(Object.keys(METRICS) as Metric[]).map((m) => (
-            <button
-              key={m}
-              className={`ret-seg-btn${metric === m ? " ret-seg-btn--on" : ""}`}
-              onClick={() => setMetric(m)}
-            >
-              {METRICS[m].label}
-            </button>
-          ))}
-        </div>
+        {chartType === "trend" && (
+          <>
+            <div className="ret-seg" role="group" aria-label="Metric">
+              {(Object.keys(METRICS) as Metric[]).map((m) => (
+                <button
+                  key={m}
+                  className={`ret-seg-btn${metric === m ? " ret-seg-btn--on" : ""}`}
+                  onClick={() => setMetric(m)}
+                >
+                  {METRICS[m].label}
+                </button>
+              ))}
+            </div>
 
-        {metric === "reach" && (
-          <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-            N =
-            <input
-              className="filter-select"
-              type="number"
-              min={2}
-              max={applied.window}
-              value={reachN}
-              onChange={(e) => setReachN(Number(e.target.value))}
-              style={{ width: "4rem" }}
-            />
-            days
-          </label>
+            {metric === "reach" && (
+              <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                N =
+                <input
+                  className="filter-select"
+                  type="number"
+                  min={2}
+                  max={applied.window}
+                  value={reachN}
+                  onChange={(e) => setReachN(Number(e.target.value))}
+                  style={{ width: "4rem" }}
+                />
+                days
+              </label>
+            )}
+
+            <div className="ret-seg" role="group" aria-label="Granularity">
+              <button className={`ret-seg-btn${gran === "month" ? " ret-seg-btn--on" : ""}`} onClick={() => setGran("month")}>
+                Monthly
+              </button>
+              <button className={`ret-seg-btn${gran === "week" ? " ret-seg-btn--on" : ""}`} onClick={() => setGran("week")}>
+                Weekly
+              </button>
+              <button className={`ret-seg-btn${gran === "day" ? " ret-seg-btn--on" : ""}`} onClick={() => setGran("day")}>
+                Daily
+              </button>
+            </div>
+          </>
         )}
-
-        <div className="ret-seg" role="group" aria-label="Granularity">
-          <button className={`ret-seg-btn${gran === "month" ? " ret-seg-btn--on" : ""}`} onClick={() => setGran("month")}>
-            Monthly
-          </button>
-          <button className={`ret-seg-btn${gran === "week" ? " ret-seg-btn--on" : ""}`} onClick={() => setGran("week")}>
-            Weekly
-          </button>
-          <button className={`ret-seg-btn${gran === "day" ? " ret-seg-btn--on" : ""}`} onClick={() => setGran("day")}>
-            Daily
-          </button>
-        </div>
       </div>
 
       {/* Date range */}
@@ -322,8 +390,73 @@ const TrialRetention: React.FC = () => {
       {loading ? (
         <div style={{ textAlign: "center", padding: "3rem" }}>
           <div className="loading-spinner"></div>
-          <p className="loading-text">Computing first-{applied.window}-day retention by cohort…</p>
+          <p className="loading-text">Computing first-{applied.window}-day trial retention…</p>
         </div>
+      ) : isBars ? (
+        barData.totalUsers === 0 ? (
+          <div className="empty-state" style={{ padding: "2rem" }}>
+            No {popNoun} in the selected timeline — widen the date range.
+          </div>
+        ) : (
+          <>
+            <section className="metrics-grid" style={{ marginTop: "1rem" }}>
+              <div className="metric-card">
+                <div className="metric-value">{barData.totalUsers.toLocaleString()}</div>
+                <div className="metric-label">{isTrial ? "Trial Starters" : "App Users"}</div>
+                <div className="metric-description">In selected timeline</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{barData.bars[1]?.pct ?? 0}%</div>
+                <div className="metric-label">Came Back (≥2 days)</div>
+                <div className="metric-description">{(barData.bars[1]?.count ?? 0).toLocaleString()} users</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{barData.bars[applied.window - 1]?.pct ?? 0}%</div>
+                <div className="metric-label">Reached All {applied.window} Days</div>
+                <div className="metric-description">{(barData.bars[applied.window - 1]?.count ?? 0).toLocaleString()} users</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{barData.avgDays.toFixed(2)}</div>
+                <div className="metric-label">Avg Active Days</div>
+                <div className="metric-description">First {applied.window} days</div>
+              </div>
+            </section>
+
+            <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+              <div className="ret-chart-head">
+                <h3>Users reaching ≥ N active days</h3>
+              </div>
+              <p className="ret-chart-sub">
+                Distinct days used within the first {applied.window} days of the {anchorNoun}, pooled over the timeline. Hover for counts.
+              </p>
+              <div style={{ width: "100%", height: 340 }}>
+                <ResponsiveContainer>
+                  <BarChart data={barData.bars} margin={{ top: 18, right: 20, bottom: 8, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} width={48} allowDecimals={false} />
+                    <Tooltip
+                      formatter={(v: number | undefined) => [`${(v ?? 0).toLocaleString()} users`, "Reached"]}
+                      labelFormatter={(l) => `${String(l)} active days`}
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      cursor={{ fill: "rgba(79,70,229,0.06)" }}
+                    />
+                    <Bar dataKey="count" fill="#4f46e5" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                      <LabelList dataKey="pct" position="top" formatter={(v) => `${v}%`} fontSize={10} fill="#6b7280" />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <p className="ret-chart-sub" style={{ marginTop: "0.75rem", maxWidth: "80ch" }}>
+              <strong>Read with care:</strong> pooled over the selected timeline — use the Timeline range to compare periods.
+              {isTrial
+                ? ` Trials from the last ~${applied.window} days are excluded (window not finished), and trials from the identify()-disabled window (~Mar–Jun 2026) are absent.`
+                : " This is whole-funnel engagement (mostly free users), not trial retention — switch to “Trial starters”."}
+            </p>
+          </>
+        )
       ) : chartData.length === 0 ? (
         <div className="empty-state" style={{ padding: "2rem" }}>
           {shownRows.length === 0
@@ -377,7 +510,7 @@ const TrialRetention: React.FC = () => {
               </h3>
             </div>
             <p className="ret-chart-sub">
-              First {applied.window} days from each user's first lesson. Cohorts under {MIN_USERS} users are hidden;
+              First {applied.window} days from each user's {isTrial ? "trial start" : "first lesson"}. Cohorts under {MIN_USERS} users are hidden;
               the most recent cohort counts only users whose full {applied.window}-day window has already elapsed.
             </p>
             <div style={{ width: "100%", height: 340 }}>
@@ -433,7 +566,7 @@ const TrialRetention: React.FC = () => {
           <p className="ret-chart-sub" style={{ marginTop: "0.75rem", maxWidth: "80ch" }}>
             <strong>Read with care:</strong>{" "}
             {isTrial
-              ? "“Trial starters” are users who ever reached a Superwall subscription status (TRIAL / ACTIVE / CANCELED / PAST_DUE / EXPIRED). Their cohort is anchored at their first lesson, which can predate the actual trial start — no trial-start timestamp exists in the DB. Cohorts are small (~2.9k users total), so read monthly for the trend and treat single-month moves cautiously."
+              ? "“Trial starters” are users with a recorded trial start (user_info.trial_started_at, from Superwall). Cohorts are anchored on the actual trial-start date, and activity is counted in the first N days of the trial — a trial user with no lessons in that window counts as 0. Coverage ~2.3k users; trials started while Superwall identify() was disabled (~Mar–Jun 2026) are anonymous and absent, so those cohorts are sparse or missing. Read monthly."
               : "This counts everyone who completed a lesson — only ~1.5% of them ever start a trial — so it is whole-funnel engagement, not trial retention. A falling line here largely reflects lower-intent acquisition as install volume scales. Switch to “Trial starters” for the trial-only signal."}
           </p>
         </>
