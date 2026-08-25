@@ -79,6 +79,25 @@ const DAY_COLORS = ["#d1d5db", "#c7d2fe", "#a5b4fc", "#818cf8", "#6366f1", "#4f4
 const dayKey = (k: number) => `b${k}`;
 const dayName = (k: number) => (k === 0 ? "0 days" : k === 1 ? "1 day" : k === 7 ? "7 (full)" : `${k} days`);
 
+interface DayUser {
+  user_id: string;
+  preferred_name: string | null;
+  learning_language: string | null;
+  payment_status: string | null;
+  active_days: number;
+}
+function prettyLang(code: string | null): string {
+  if (!code || !code.trim()) return "—";
+  return code
+    .split(/[\s_-]+/)
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+function statusVariant(status: string | null): string {
+  const s = (status || "").toUpperCase();
+  return s === "ACTIVE" ? "paying" : s === "TRIAL" ? "trial" : s === "PAST_DUE" ? "pastdue" : "free";
+}
+
 const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
   // timeframe); "trend" = the metric over time (cohort line); "recent" = a
@@ -103,6 +122,10 @@ const TrialRetention: React.FC = () => {
   const [appliedRange, setAppliedRange] = useState({ from: "", to: "" });
   // Per-day stack: raw counts, or 100%-stacked share (every bar full height).
   const [stackMode, setStackMode] = useState<"count" | "share">("share");
+  // Click-through: a day's trial starters.
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [dayUsers, setDayUsers] = useState<DayUser[]>([]);
+  const [dayUsersLoading, setDayUsersLoading] = useState(false);
   const [dailyRows, setDailyRows] = useState<DailyRow[]>([]);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyError, setDailyError] = useState<string | null>(null);
@@ -186,6 +209,37 @@ const TrialRetention: React.FC = () => {
       cancelled = true;
     };
   }, [chartType, appliedRange]);
+
+  // Fetch the trial starters for a clicked day.
+  useEffect(() => {
+    if (!selectedDay) return;
+    let cancelled = false;
+    (async () => {
+      setDayUsersLoading(true);
+      const { data, error } = await supabase.rpc("trial_day_users", { day: selectedDay });
+      if (cancelled) return;
+      setDayUsers(
+        error
+          ? []
+          : (data ?? []).map((r: Record<string, unknown>) => ({
+              user_id: String(r.user_id),
+              preferred_name: (r.preferred_name as string) ?? null,
+              learning_language: (r.learning_language as string) ?? null,
+              payment_status: (r.payment_status as string) ?? null,
+              active_days: Number(r.active_days ?? 0),
+            })),
+      );
+      setDayUsersLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDay]);
+
+  // Reset the day drill-down when the underlying data/range changes.
+  useEffect(() => {
+    setSelectedDay(null);
+  }, [appliedRange, chartType]);
 
   const effReachN = Math.min(Math.max(2, Math.round(reachN) || 2), applied.window);
 
@@ -627,7 +681,8 @@ const TrialRetention: React.FC = () => {
                 the “4 days” slice. Darker = more days; faded bars are still in progress (partial).
                 {stackMode === "share"
                   ? " Every bar is normalized to 100%, so you're comparing the mix, not the volume."
-                  : " Hover for the breakdown."}
+                  : " Hover for the breakdown."}{" "}
+                <strong>Click a bar</strong> to list that day's trial starters.
               </p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem 0.9rem", margin: "0 0 0.6rem", fontSize: 12, color: "#52514e" }}>
                 {Array.from({ length: 8 }, (_, k) => (
@@ -637,7 +692,7 @@ const TrialRetention: React.FC = () => {
                   </span>
                 ))}
               </div>
-              <div style={{ width: "100%", height: 320 }}>
+              <div style={{ width: "100%", height: 320, cursor: "pointer" }}>
                 <ResponsiveContainer>
                   <BarChart
                     data={dailyChart}
@@ -681,7 +736,20 @@ const TrialRetention: React.FC = () => {
                       }}
                     />
                     {Array.from({ length: 8 }, (_, k) => (
-                      <Bar key={k} dataKey={dayKey(k)} name={dayName(k)} stackId="d" fill={DAY_COLORS[k]} isAnimationActive={false}>
+                      <Bar
+                        key={k}
+                        dataKey={dayKey(k)}
+                        name={dayName(k)}
+                        stackId="d"
+                        fill={DAY_COLORS[k]}
+                        isAnimationActive={false}
+                        onClick={(data) => {
+                          const d =
+                            (data as { payload?: { d?: string }; d?: string })?.payload?.d ??
+                            (data as { d?: string })?.d;
+                          if (d) setSelectedDay(d);
+                        }}
+                      >
                         {dailyChart.map((r, i) => (
                           <Cell key={i} fillOpacity={r.partial ? 0.55 : 1} />
                         ))}
@@ -700,6 +768,91 @@ const TrialRetention: React.FC = () => {
                 </ResponsiveContainer>
               </div>
             </div>
+
+            {selectedDay && (
+              <div className="chart-container" style={{ marginTop: "1rem" }}>
+                <div className="ret-chart-head">
+                  <h3>
+                    Trials started{" "}
+                    {(() => {
+                      const d = new Date(selectedDay + "T00:00:00");
+                      return Number.isNaN(d.getTime()) ? selectedDay : format(d, "MMM d, yyyy");
+                    })()}
+                    {!dayUsersLoading ? ` · ${dayUsers.length} users` : ""}
+                  </h3>
+                  <button className="filters-clear-btn" onClick={() => setSelectedDay(null)}>
+                    Close
+                  </button>
+                </div>
+                {dayUsersLoading ? (
+                  <div style={{ textAlign: "center", padding: "1.5rem" }}>
+                    <div className="loading-spinner"></div>
+                  </div>
+                ) : dayUsers.length === 0 ? (
+                  <div className="empty-state" style={{ padding: "1.5rem" }}>No trial starters found for this day.</div>
+                ) : (
+                  <>
+                    <p className="ret-chart-sub">
+                      Sorted by active days. Click a name to open that user's profile in a new tab.
+                    </p>
+                    <div className="table-container">
+                      <table className="data-table">
+                        <thead className="table-head">
+                          <tr>
+                            <th>User</th>
+                            <th>Learning</th>
+                            <th>Status</th>
+                            <th title="Distinct days with a completed lesson, in the 7-day trial window">Active days</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody className="table-body">
+                          {dayUsers.map((u) => {
+                            const href = `#user-lookup:${u.user_id}`;
+                            const st = (u.payment_status || "").toUpperCase();
+                            return (
+                              <tr key={u.user_id}>
+                                <td>
+                                  <a
+                                    href={href}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ color: "#4f46e5", textDecoration: "none", fontWeight: 500 }}
+                                  >
+                                    {u.preferred_name || u.user_id.slice(0, 8) + "…"} ↗
+                                  </a>
+                                </td>
+                                <td>{prettyLang(u.learning_language)}</td>
+                                <td>
+                                  {st ? (
+                                    <span className={`plan-pill plan-pill--${statusVariant(u.payment_status)}`}>
+                                      {st === "PAST_DUE" ? "Past Due" : st.charAt(0) + st.slice(1).toLowerCase()}
+                                    </span>
+                                  ) : (
+                                    "—"
+                                  )}
+                                </td>
+                                <td>{u.active_days}</td>
+                                <td>
+                                  <a
+                                    href={href}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ color: "#6b7280", fontSize: "0.8rem" }}
+                                  >
+                                    Open profile
+                                  </a>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="chart-container" style={{ marginTop: "1.25rem" }}>
               <div className="ret-chart-head">
