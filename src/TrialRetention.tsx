@@ -101,6 +101,8 @@ const TrialRetention: React.FC = () => {
   const [recentFrom, setRecentFrom] = useState("");
   const [recentTo, setRecentTo] = useState("");
   const [appliedRange, setAppliedRange] = useState({ from: "", to: "" });
+  // Per-day stack: raw counts, or 100%-stacked share (every bar full height).
+  const [stackMode, setStackMode] = useState<"count" | "share">("share");
   const [dailyRows, setDailyRows] = useState<DailyRow[]>([]);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyError, setDailyError] = useState<string | null>(null);
@@ -589,12 +591,31 @@ const TrialRetention: React.FC = () => {
 
             <div className="chart-container" style={{ marginTop: "1.25rem" }}>
               <div className="ret-chart-head">
-                <h3>Trials by exact active-days, per day</h3>
+                <h3>{stackMode === "share" ? "Share of trials by active-days, per day" : "Trials by exact active-days, per day"}</h3>
+                <div className="ret-seg" role="group" aria-label="Stack mode">
+                  <button
+                    className={`ret-seg-btn${stackMode === "share" ? " ret-seg-btn--on" : ""}`}
+                    onClick={() => setStackMode("share")}
+                    title="100%-stacked: every bar full height, showing the proportion in each day-bucket"
+                  >
+                    Share
+                  </button>
+                  <button
+                    className={`ret-seg-btn${stackMode === "count" ? " ret-seg-btn--on" : ""}`}
+                    onClick={() => setStackMode("count")}
+                    title="Raw user counts stacked"
+                  >
+                    Count
+                  </button>
+                </div>
               </div>
               <p className="ret-chart-sub">
                 Each bar = the users who started a trial that day, stacked into <strong>non-overlapping</strong> groups by
                 exactly how many distinct days they were active (0–7) in their 7-day trial window — a 4-day user is only in
-                the “4 days” slice. Darker = more days; faded bars are still in progress (partial). Hover for the breakdown.
+                the “4 days” slice. Darker = more days; faded bars are still in progress (partial).
+                {stackMode === "share"
+                  ? " Every bar is normalized to 100%, so you're comparing the mix, not the volume."
+                  : " Hover for the breakdown."}
               </p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem 0.9rem", margin: "0 0 0.6rem", fontSize: 12, color: "#52514e" }}>
                 {Array.from({ length: 8 }, (_, k) => (
@@ -606,10 +627,20 @@ const TrialRetention: React.FC = () => {
               </div>
               <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
-                  <BarChart data={dailyChart} margin={{ top: 12, right: 20, bottom: 8, left: 0 }}>
+                  <BarChart
+                    data={dailyChart}
+                    margin={{ top: 12, right: 20, bottom: 8, left: 0 }}
+                    stackOffset={stackMode === "share" ? "expand" : undefined}
+                  >
                     <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={8} />
-                    <YAxis tick={{ fontSize: 12 }} width={40} allowDecimals={false} />
+                    <YAxis
+                      tick={{ fontSize: 12 }}
+                      width={40}
+                      allowDecimals={false}
+                      domain={stackMode === "share" ? [0, 1] : undefined}
+                      tickFormatter={stackMode === "share" ? (v: number) => `${Math.round(v * 100)}%` : undefined}
+                    />
                     <Tooltip
                       cursor={{ fill: "rgba(79,70,229,0.06)" }}
                       content={(props) => {
@@ -630,6 +661,7 @@ const TrialRetention: React.FC = () => {
                               <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                                 <span style={{ width: 10, height: 10, borderRadius: 2, background: p.color, display: "inline-block" }} />
                                 {p.name}: {p.value}
+                                {row && row.trials ? ` (${Math.round((100 * Number(p.value)) / row.trials)}%)` : ""}
                               </div>
                             ))}
                           </div>
