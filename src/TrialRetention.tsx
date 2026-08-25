@@ -75,8 +75,18 @@ interface DailyRow {
   hist: number[]; // hist[k] = # users with EXACTLY k active days (k = 0..7)
 }
 
-// Ordinal light→dark ramp for the exact-active-days stack (0 = grey "no return").
-const DAY_COLORS = ["#d1d5db", "#c7d2fe", "#a5b4fc", "#818cf8", "#6366f1", "#4f46e5", "#4338ca", "#3730a3"];
+// Multi-hue engagement gradient for the exact-active-days buckets (0 = grey "no
+// return"; warm/low days → cool/high days) so each bucket is easy to tell apart.
+const DAY_COLORS = [
+  "#94a3b8", // 0 days — slate grey
+  "#ef4444", // 1 day  — red
+  "#f97316", // 2 days — orange
+  "#eab308", // 3 days — yellow
+  "#84cc16", // 4 days — lime
+  "#22c55e", // 5 days — green
+  "#06b6d4", // 6 days — cyan
+  "#6366f1", // 7 days — indigo
+];
 const dayKey = (k: number) => `b${k}`;
 const dayName = (k: number) => (k === 0 ? "0 days" : k === 1 ? "1 day" : k === 7 ? "7 (full)" : `${k} days`);
 
@@ -688,7 +698,7 @@ const TrialRetention: React.FC = () => {
               <p className="ret-chart-sub">
                 Each bar = the users who started a trial that day, stacked into <strong>non-overlapping</strong> groups by
                 exactly how many distinct days they were active (0–7) in their 7-day trial window — a 4-day user is only in
-                the “4 days” slice. Darker = more days; faded bars are still in progress (partial).
+                the “4 days” slice. Warm = fewer days, cool = more (see legend); faded bars are still in progress (partial).
                 {stackMode === "share"
                   ? " Every bar is normalized to 100%, so you're comparing the mix, not the volume."
                   : " Hover for the breakdown."}{" "}
@@ -1000,7 +1010,10 @@ const TrialRetention: React.FC = () => {
                       contentStyle={{ fontSize: 12, borderRadius: 8 }}
                       cursor={{ fill: "rgba(79,70,229,0.06)" }}
                     />
-                    <Bar dataKey="count" fill="#4f46e5" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                    <Bar dataKey="count" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                      {barData.bars.map((b, i) => (
+                        <Cell key={i} fill={DAY_COLORS[Math.min(b.day, 7)]} />
+                      ))}
                       <LabelList dataKey="pct" position="top" formatter={(v) => `${v}%`} fontSize={10} fill="#6b7280" />
                     </Bar>
                   </BarChart>
