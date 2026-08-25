@@ -290,7 +290,13 @@ const TrialRetention: React.FC = () => {
         const dt = new Date(r.d + "T00:00:00");
         const buckets: Record<string, number> = {};
         for (let k = 0; k <= 7; k++) buckets[dayKey(k)] = r.hist[k] ?? 0;
-        return { ...r, ...buckets, label: Number.isNaN(dt.getTime()) ? r.d : format(dt, "MMM d") };
+        return {
+          ...r,
+          ...buckets,
+          // Engagement score: 0 = nobody returned, 100 = everyone active all 7 days.
+          score: Math.round((r.avg_active / 7) * 100),
+          label: Number.isNaN(dt.getTime()) ? r.d : format(dt, "MMM d"),
+        };
       }),
     [dailyRows],
   );
@@ -307,7 +313,8 @@ const TrialRetention: React.FC = () => {
     const trials = dailyRows.reduce((a, r) => a + r.trials, 0);
     const activeSum = dailyRows.reduce((a, r) => a + r.avg_active * r.trials, 0);
     const busiest = dailyRows.reduce<DailyRow | null>((b, r) => (!b || r.trials > b.trials ? r : b), null);
-    return { trials, avgActive: trials ? activeSum / trials : 0, busiest, days: dailyRows.length };
+    const avgActive = trials ? activeSum / trials : 0;
+    return { trials, avgActive, score: Math.round((avgActive / 7) * 100), busiest, days: dailyRows.length };
   }, [dailyRows]);
 
   const headCount = isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
@@ -569,6 +576,11 @@ const TrialRetention: React.FC = () => {
                 <div className="metric-description">{rangeLabel}</div>
               </div>
               <div className="metric-card">
+                <div className="metric-value">{dailySummary.score}</div>
+                <div className="metric-label">Engagement Score</div>
+                <div className="metric-description">avg days ÷ 7 × 100 (100 = all 7 days)</div>
+              </div>
+              <div className="metric-card">
                 <div className="metric-value">{dailySummary.avgActive.toFixed(2)}</div>
                 <div className="metric-label">Avg Active Days</div>
                 <div className="metric-description">In the 7-day trial window</div>
@@ -629,7 +641,7 @@ const TrialRetention: React.FC = () => {
                 <ResponsiveContainer>
                   <BarChart
                     data={dailyChart}
-                    margin={{ top: 12, right: 20, bottom: 8, left: 0 }}
+                    margin={{ top: 24, right: 20, bottom: 8, left: 0 }}
                     stackOffset={stackMode === "share" ? "expand" : undefined}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
@@ -673,9 +685,54 @@ const TrialRetention: React.FC = () => {
                         {dailyChart.map((r, i) => (
                           <Cell key={i} fillOpacity={r.partial ? 0.55 : 1} />
                         ))}
+                        {k === 7 && (
+                          <LabelList
+                            dataKey="score"
+                            position="top"
+                            fontSize={10}
+                            fontWeight={600}
+                            fill="#374151"
+                          />
+                        )}
                       </Bar>
                     ))}
                   </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+              <div className="ret-chart-head">
+                <h3>Engagement score over the period</h3>
+              </div>
+              <p className="ret-chart-sub">
+                Per-day engagement score (avg active days ÷ 7 × 100; 100 = every trial user active all 7 days). Recent
+                partial days read low until their 7-day window completes.
+              </p>
+              <div style={{ width: "100%", height: 240 }}>
+                <ResponsiveContainer>
+                  <LineChart data={dailyChart} margin={{ top: 10, right: 24, bottom: 8, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={8} />
+                    <YAxis domain={[0, "auto"]} tick={{ fontSize: 12 }} width={40} />
+                    <Tooltip
+                      formatter={(v: number | undefined) => [`${v ?? 0}`, "Score"]}
+                      labelFormatter={(l) => {
+                        const row = dailyChart.find((r) => r.label === String(l));
+                        return row ? `${String(l)} · ${row.trials} trials${row.partial ? " · partial" : ""}` : String(l);
+                      }}
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="score"
+                      stroke="#4f46e5"
+                      strokeWidth={2.5}
+                      dot={{ r: 3 }}
+                      activeDot={{ r: 5 }}
+                      isAnimationActive={false}
+                    />
+                  </LineChart>
                 </ResponsiveContainer>
               </div>
             </div>
@@ -687,6 +744,7 @@ const TrialRetention: React.FC = () => {
                     <th>Trial start day</th>
                     <th>Trials</th>
                     <th title="Avg distinct active days in the 7-day trial window">Avg days</th>
+                    <th title="Engagement score = avg days ÷ 7 × 100 (100 = all 7 days)">Score</th>
                     <th>Median</th>
                     <th>Max</th>
                     <th></th>
@@ -698,6 +756,7 @@ const TrialRetention: React.FC = () => {
                       <td>{r.label}</td>
                       <td>{r.trials}</td>
                       <td>{r.avg_active.toFixed(2)}</td>
+                      <td>{r.score}</td>
                       <td>{r.median_active}</td>
                       <td>{r.max_active}</td>
                       <td>
