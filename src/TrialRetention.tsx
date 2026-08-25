@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { supabase } from "./lib/supabase";
+import { getCountryFromTimezone } from "./lib/timezone";
 import {
   LineChart,
   Line,
@@ -84,7 +85,14 @@ interface DayUser {
   preferred_name: string | null;
   learning_language: string | null;
   payment_status: string | null;
+  age: string | null;
+  time_zone: string | null;
   active_days: number;
+}
+// user_info.age is TEXT with "0"/"-1" unset sentinels — show real ages only.
+function prettyAge(age: string | null): string {
+  const n = parseInt((age ?? "").trim(), 10);
+  return Number.isFinite(n) && n > 0 ? String(n) : "—";
 }
 function prettyLang(code: string | null): string {
   if (!code || !code.trim()) return "—";
@@ -226,6 +234,8 @@ const TrialRetention: React.FC = () => {
               preferred_name: (r.preferred_name as string) ?? null,
               learning_language: (r.learning_language as string) ?? null,
               payment_status: (r.payment_status as string) ?? null,
+              age: (r.age as string) ?? null,
+              time_zone: (r.time_zone as string) ?? null,
               active_days: Number(r.active_days ?? 0),
             })),
       );
@@ -800,6 +810,8 @@ const TrialRetention: React.FC = () => {
                         <thead className="table-head">
                           <tr>
                             <th>User</th>
+                            <th>Country</th>
+                            <th>Age</th>
                             <th>Learning</th>
                             <th>Status</th>
                             <th title="Distinct days with a completed lesson, in the 7-day trial window">Active days</th>
@@ -822,6 +834,8 @@ const TrialRetention: React.FC = () => {
                                     {u.preferred_name || u.user_id.slice(0, 8) + "…"} ↗
                                   </a>
                                 </td>
+                                <td>{getCountryFromTimezone(u.time_zone)}</td>
+                                <td>{prettyAge(u.age)}</td>
                                 <td>{prettyLang(u.learning_language)}</td>
                                 <td>
                                   {st ? (
