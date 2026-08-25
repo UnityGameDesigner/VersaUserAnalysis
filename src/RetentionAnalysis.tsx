@@ -159,9 +159,10 @@ function computeCohorts(
   return { rows, maxOffset, curve };
 }
 
-// Heatmap cell background — light→indigo by retention fraction.
+// Heatmap cell background — red (low retention) → yellow → green (high), so
+// cohort trends read at a glance. Lightness stays high enough for dark text.
 const heatColor = (frac: number): string =>
-  `rgba(79, 70, 229, ${(0.06 + frac * 0.85).toFixed(3)})`;
+  `hsl(${Math.round(frac * 130)}, 72%, ${Math.round(78 - Math.abs(frac - 0.5) * 26)}%)`;
 
 const MAX_HEATMAP_COLS = 12;
 
@@ -214,7 +215,7 @@ const CohortHeatmap: React.FC<{
                       className="ret-cell"
                       style={{
                         background: heatColor(v),
-                        color: v > 0.5 ? "#fff" : "#1f2937",
+                        color: "#1f2937",
                       }}
                       title={`${cohortLabel(r.key, gran)} · ${prefix}${k}: ${pct}% (${Math.round(
                         v * r.size,
@@ -228,6 +229,20 @@ const CohortHeatmap: React.FC<{
             ))}
           </tbody>
         </table>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.6rem", fontSize: 12, color: "#52514e" }}>
+        <span>Retention</span>
+        <span>low</span>
+        <span
+          style={{
+            height: 12,
+            width: 140,
+            borderRadius: 3,
+            display: "inline-block",
+            background: "linear-gradient(to right, hsl(0,72%,65%), hsl(65,72%,78%), hsl(130,72%,65%))",
+          }}
+        />
+        <span>high</span>
       </div>
       {result.maxOffset > MAX_HEATMAP_COLS && (
         <p className="ret-chart-note">
