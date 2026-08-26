@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   getAllSavedProfiles,
+  loadSavedProfiles,
   deleteSavedProfile,
   updateProfileNote,
   type SavedProfile,
@@ -123,6 +124,18 @@ const SavedProfiles: React.FC<Props> = ({ onUserClick }) => {
   const [records, setRecords] = useState<SavedProfile[]>(() => getAllSavedProfiles());
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [search, setSearch] = useState("");
+
+  // Hydrate from the durable Supabase store on open (recovers saves after a
+  // server restart / port change / different browser).
+  useEffect(() => {
+    let active = true;
+    loadSavedProfiles().then((list) => {
+      if (active) setRecords(list);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleDelete = (userId: string) => {
     deleteSavedProfile(userId);

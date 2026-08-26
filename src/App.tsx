@@ -15,6 +15,7 @@ import TutorComparison from "./TutorComparison";
 import TrialRetention from "./TrialRetention";
 import TrialConversion from "./TrialConversion";
 import CancelReasons from "./CancelReasons";
+import { loadSavedProfiles } from "./lib/savedProfilesStore";
 
 interface NavState {
   tab: Tab;
@@ -42,6 +43,13 @@ function hashFromState(state: NavState): string {
 const App: React.FC = () => {
   const [navState, setNavState] = useState<NavState>(stateFromHash);
   const isPop = useRef(false);
+
+  // Hydrate the durable saved-profiles set from Supabase once on startup, so
+  // bookmarks survive server restarts / port changes and show as saved in User
+  // Lookup even before the Saved page is opened.
+  useEffect(() => {
+    loadSavedProfiles().catch(() => {});
+  }, []);
 
   const navigate = (tab: Tab, userId: string | null = null) => {
     const state: NavState = { tab, lookupUserId: userId };
