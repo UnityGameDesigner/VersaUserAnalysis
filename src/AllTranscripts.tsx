@@ -37,6 +37,7 @@ interface TranscriptRow {
   word_timeline: unknown;
   exit_phase: string | null;
   exit_trigger: string | null;
+  early_end_reason: string | null;
   mic_mode: string | null;
 }
 
@@ -958,7 +959,7 @@ const AllTranscripts: React.FC = () => {
         `id, created_at, user_id, lesson_id, conversation_transcript,
          user_improvement_feedback, user_rating_feedback,
          ended_early, payment_status, word_timeline,
-         exit_phase, exit_trigger, mic_mode`,
+         exit_phase, exit_trigger, early_end_reason, mic_mode`,
       );
     if (appliedLessonId !== null) {
       query =

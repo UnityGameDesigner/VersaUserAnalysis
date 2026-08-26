@@ -71,6 +71,7 @@ interface CompletedLesson {
   word_timeline: unknown;
   exit_phase: string | null;
   exit_trigger: string | null;
+  early_end_reason: string | null;
   mic_mode: string | null;
 }
 
@@ -690,7 +691,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
             `id, created_at, user_id, lesson_id, conversation_transcript,
              phrase_feedback, user_improvement_feedback, user_rating_feedback,
              ended_early, payment_status, word_timeline,
-             exit_phase, exit_trigger, mic_mode`,
+             exit_phase, exit_trigger, early_end_reason, mic_mode`,
           )
           .eq("user_id", trimmed)
           .gt("id", lastId)

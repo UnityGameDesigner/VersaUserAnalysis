@@ -142,12 +142,54 @@ export function exitOptions(present: Set<string>, table: Record<string, ExitMeta
   return ["All", ...arr];
 }
 
+// early_end_reason: the learner's SELF-REPORTED reason(s) for ending a call
+// early — a comma-separated multi-select (e.g. "couldnt_hear_tutor,mic_not_working").
+// Distinct from exit_trigger (how the call was torn down). Nullable/best-effort.
+export const EARLY_END_REASON_META: Record<string, { label: string; variant: string }> = {
+  audio_problems: { label: "Audio problems", variant: "bad" },
+  mic_not_working: { label: "Mic not working", variant: "bad" },
+  couldnt_hear_tutor: { label: "Couldn't hear tutor", variant: "bad" },
+  never_loaded: { label: "Never loaded", variant: "bad" },
+  slow_responses: { label: "Slow responses", variant: "bad" },
+  couldnt_understand_tutor: { label: "Couldn't understand tutor", variant: "warn" },
+  didnt_understand_me: { label: "Didn't understand me", variant: "warn" },
+  didnt_know_what_to_do: { label: "Didn't know what to do", variant: "warn" },
+  too_easy: { label: "Too easy", variant: "neutral" },
+  too_hard: { label: "Too hard", variant: "neutral" },
+  wrong_topic: { label: "Wrong topic", variant: "neutral" },
+  out_of_time: { label: "Out of time", variant: "neutral" },
+  took_too_long: { label: "Took too long", variant: "neutral" },
+  just_looking: { label: "Just looking", variant: "neutral" },
+  felt_awkward: { label: "Felt awkward", variant: "neutral" },
+  boring: { label: "Boring", variant: "neutral" },
+  didnt_want_to_chat: { label: "Didn't want to chat", variant: "neutral" },
+};
+
+function prettifyReason(raw: string): string {
+  return raw
+    .trim()
+    .split("_")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+// Split the comma-separated early_end_reason into labelled chips.
+export function earlyEndReasons(value: string | null): { label: string; variant: string }[] {
+  if (!value || !value.trim()) return [];
+  return value
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .map((v) => EARLY_END_REASON_META[v.toLowerCase()] ?? { label: prettifyReason(v), variant: "neutral" });
+}
+
 // The per-lesson metrics a badge strip can read off a completed_lessons row.
 export interface LessonBadgeRow {
   word_timeline: unknown;
   ended_early: boolean | null;
   exit_phase: string | null;
   exit_trigger: string | null;
+  early_end_reason: string | null;
   mic_mode: string | null;
 }
 
@@ -225,6 +267,15 @@ export const LessonBadges: React.FC<{
         </span>
       );
     })()}
+    {earlyEndReasons(row.early_end_reason).map((r, i) => (
+      <span
+        key={i}
+        className={`lesson-card-badge lesson-card-badge--exit-${r.variant}`}
+        title="Early-end reason — what the learner said when they ended the call early."
+      >
+        🚪 {r.label}
+      </span>
+    ))}
     {(() => {
       const mic = micModeMeta(row.mic_mode);
       if (!mic) return null;
