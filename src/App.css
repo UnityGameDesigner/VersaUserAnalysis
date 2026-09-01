@@ -1957,6 +1957,21 @@ body,
 .user-trial-badge--churned   { background: #fbe0e0; color: #a12a2a; }
 .user-trial-badge--in-trial  { background: #fdeecb; color: #8a6410; }
 
+/* Predicted conversion-likelihood tier (model lean). Outlined, not filled, so it
+   reads as a prediction distinct from the solid actual-outcome badge above. */
+.user-conv-badge {
+  display: inline-flex;
+  padding: 0.16rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  background: transparent;
+  border: 1px solid currentColor;
+}
+.user-conv-badge--high   { color: #146c43; }
+.user-conv-badge--medium { color: #8a6410; }
+.user-conv-badge--low    { color: #6b7280; }
+
 .user-platform-badge {
   display: inline-flex;
   padding: 0.18rem 0.6rem;

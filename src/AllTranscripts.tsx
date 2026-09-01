@@ -12,6 +12,7 @@ import {
   exitFilterLabel,
 } from "./LessonBadges";
 import { exportTranscriptsZip } from "./lib/exportTranscripts";
+import { scoreConversion, CONV_MODEL_AUC, type ConvTier } from "./lib/conversionScore";
 import { evaluateTutor, type TutorEvaluation } from "./lib/evaluateTutor";
 import { getSavedEvaluation, saveEvaluation } from "./lib/evalStore";
 import {
@@ -175,6 +176,29 @@ const TRIAL_OUTCOME_META: Record<
 
 // Order for the filter dropdown (skips "All", which the UI prepends).
 const TRIAL_OUTCOME_ORDER: TrialOutcome[] = ["converted", "churned", "in_trial", "none"];
+
+// Predicted trial-conversion likelihood tier (from the demographics logistic
+// scorecard in lib/conversionScore). A model lean, not a certainty — see the
+// hint text. High ≈ 42% convert, Medium ≈ 21%, Low ≈ 7% (base ~18%).
+const CONV_TIER_META: Record<ConvTier, { label: string; variant: string; hint: string }> = {
+  high: {
+    label: "High",
+    variant: "high",
+    hint: `Predicted trial-conversion likelihood: HIGH (top ~20%, historically ~42% convert). Signup-demographics model, AUC ≈ ${CONV_MODEL_AUC} — a lean, not a certainty.`,
+  },
+  medium: {
+    label: "Medium",
+    variant: "medium",
+    hint: `Predicted trial-conversion likelihood: MEDIUM (historically ~21% convert). Model AUC ≈ ${CONV_MODEL_AUC} — a lean, not a certainty.`,
+  },
+  low: {
+    label: "Low",
+    variant: "low",
+    hint: `Predicted trial-conversion likelihood: LOW (bottom ~50%, historically ~7% convert). Model AUC ≈ ${CONV_MODEL_AUC} — a lean, not a certainty.`,
+  },
+};
+
+const CONV_TIER_ORDER: ConvTier[] = ["high", "medium", "low"];
 
 function trialOutcome(
   meta: { trial_started_at: string | null; became_active_at: string | null } | undefined | null,
@@ -826,6 +850,19 @@ const TranscriptCard: React.FC<{
                   </span>
                 );
               })()}
+              {(() => {
+                const cs = scoreConversion(user as unknown as Record<string, unknown>);
+                if (!cs) return null;
+                const m = CONV_TIER_META[cs.tier];
+                return (
+                  <span
+                    className={`user-conv-badge user-conv-badge--${m.variant}`}
+                    title={`${m.hint} This user: ${Math.round(cs.prob * 100)}%.`}
+                  >
+                    ≈ {m.label}
+                  </span>
+                );
+              })()}
               {user.demand_tier && (
                 <span
                   className={`user-tier-badge user-tier-badge--${user.demand_tier.toLowerCase()}`}
@@ -996,6 +1033,7 @@ const AllTranscripts: React.FC = () => {
   const [filterExitPhase, setFilterExitPhase] = useState<string>("All");
   const [filterExitTrigger, setFilterExitTrigger] = useState<string>("All");
   const [filterTrialOutcome, setFilterTrialOutcome] = useState<string>("All");
+  const [filterConvLikelihood, setFilterConvLikelihood] = useState<string>("All");
   const [filterLessonInput, setFilterLessonInput] = useState<string>("");
   // "is" matches the given lesson id; "isNot" excludes it.
   const [filterLessonMode, setFilterLessonMode] = useState<"is" | "isNot">("is");
@@ -1268,9 +1306,10 @@ const AllTranscripts: React.FC = () => {
       if (filterStatus !== "All" && statusKey(meta?.payment_status ?? null) !== filterStatus) return false;
       if (filterPlatform !== "All" && platformKey(meta?.platform ?? null) !== filterPlatform) return false;
       if (filterTrialOutcome !== "All" && trialOutcome(meta) !== filterTrialOutcome) return false;
+      if (filterConvLikelihood !== "All" && (scoreConversion(meta as unknown as Record<string, unknown> | undefined)?.tier ?? null) !== filterConvLikelihood) return false;
       return true;
     });
-  }, [rows, userMeta, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome]);
+  }, [rows, userMeta, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome, filterConvLikelihood]);
 
   const toggleSelect = useCallback((row: TranscriptRow) => {
     setSelected((prev) => {
@@ -1326,6 +1365,7 @@ const AllTranscripts: React.FC = () => {
     filterExitPhase !== "All" ||
     filterExitTrigger !== "All" ||
     filterTrialOutcome !== "All" ||
+    filterConvLikelihood !== "All" ||
     filterLessonInput.trim() !== "";
 
   // Keep loading while the sentinel stays in view.
@@ -1653,6 +1693,26 @@ const AllTranscripts: React.FC = () => {
               </svg>
             </label>
 
+            <label className="tx-chip" data-active={filterConvLikelihood !== "All"}>
+              <span className="tx-chip-label">Likely to convert</span>
+              <select
+                className="tx-chip-select"
+                value={filterConvLikelihood}
+                onChange={(e) => setFilterConvLikelihood(e.target.value)}
+                title={`Predicted trial-conversion likelihood from signup demographics (model AUC ≈ ${CONV_MODEL_AUC}). A lean, not a certainty.`}
+              >
+                <option value="All">Any</option>
+                {CONV_TIER_ORDER.map((t) => (
+                  <option key={t} value={t}>
+                    {CONV_TIER_META[t].label}
+                  </option>
+                ))}
+              </select>
+              <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </label>
+
             {anyFilterActive && (
               <button
                 className="tx-clear-btn"
@@ -1671,6 +1731,7 @@ const AllTranscripts: React.FC = () => {
                   setFilterExitPhase("All");
                   setFilterExitTrigger("All");
                   setFilterTrialOutcome("All");
+                  setFilterConvLikelihood("All");
                   setFilterLessonInput("");
                 }}
               >

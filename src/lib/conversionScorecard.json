@@ -1,0 +1,388 @@
+{
+  "model": "logreg-demographics-v1",
+  "cv_auc": 0.735,
+  "base_rate": 0.181,
+  "intercept": -0.09483064175541756,
+  "numeric": [
+    {
+      "name": "age",
+      "median": 31.5,
+      "mean": 31.861348528015196,
+      "scale": 10.398140534563568,
+      "coef": 0.4684838553060824
+    }
+  ],
+  "categorical": [
+    {
+      "name": "gender",
+      "coefs": {
+        "Female": -0.03169068273902005,
+        "Male": 0.10855387930119295,
+        "Prefer not to say": -0.5748279150270833
+      },
+      "infrequent_coef": 0.5019745950909213,
+      "infrequent_values": [
+        "NA",
+        "Other"
+      ]
+    },
+    {
+      "name": "native_language",
+      "coefs": {
+        "ar": -0.7828846236887274,
+        "en": 0.7542224507817977,
+        "id": 0.0870015942395387,
+        "th": -0.4221079691214765,
+        "tl": 0.7950344241138124,
+        "vi": -0.21684954427002964
+      },
+      "infrequent_coef": -0.21040645542890205,
+      "infrequent_values": [
+        "de",
+        "es",
+        "fr",
+        "it",
+        "ja",
+        "ko",
+        "ms",
+        "other:Arabic",
+        "other:Bisaya",
+        "other:English",
+        "other:Filipino",
+        "other:Ghana",
+        "other:IsiZulu",
+        "other:Kurdish",
+        "other:LanguageGhanaian",
+        "other:Myanmar",
+        "other:Philippines",
+        "other:Pilipino",
+        "other:Romania",
+        "other:Romanian",
+        "other:Rom\u00e2n\u0103",
+        "other:Tagalog",
+        "other:Tamil",
+        "other:Twi",
+        "other:Us",
+        "other:Xitsonga",
+        "other:english",
+        "other:tagalog",
+        "pt-BR",
+        "ru",
+        "tr"
+      ]
+    },
+    {
+      "name": "learning_language",
+      "coefs": {
+        "english": -0.1455708969667397
+      },
+      "infrequent_coef": 0.1495807735927433,
+      "infrequent_values": [
+        "chinese",
+        "french",
+        "japanese",
+        "korean"
+      ]
+    },
+    {
+      "name": "level",
+      "coefs": {
+        "A1 - Beginner": 0.12824001054572642,
+        "A2 - Early Intermediate": 0.003854127708586577,
+        "B1 - Intermediate": 0.3079812097472957,
+        "B2 - Experienced": 0.44676336577171155,
+        "B2+ - Experienced": -0.1581663089084034,
+        "beginner": -0.47585182393924846,
+        "intermediate": -0.1825615229195037
+      },
+      "infrequent_coef": -0.06624918138014987,
+      "infrequent_values": [
+        "A1 - Nagsisimula",
+        "Beginner",
+        "C1 - Advanced",
+        "Early Intermediate",
+        "advanced"
+      ]
+    },
+    {
+      "name": "reason",
+      "coefs": {
+        "Career opportunities": 0.09544610610304637,
+        "Career opportunities,Traveling,Living abroad,School,Personal interest": 0.07239453330549564,
+        "Career opportunities,Traveling,Living abroad,School,Personal interest,Other": 0.2006371066536336,
+        "Not specified": -0.6736458289154718,
+        "Personal interest": 0.0909832383838355
+      },
+      "infrequent_coef": 0.2181947210954711,
+      "infrequent_values": [
+        "Career opportunities,Living abroad",
+        "Career opportunities,Living abroad,Other",
+        "Career opportunities,Living abroad,Other,Traveling",
+        "Career opportunities,Living abroad,Personal interest",
+        "Career opportunities,Living abroad,Personal interest,School",
+        "Career opportunities,Living abroad,Personal interest,School,Traveling",
+        "Career opportunities,Living abroad,Personal interest,Traveling",
+        "Career opportunities,Living abroad,School",
+        "Career opportunities,Living abroad,School,Personal interest,Traveling",
+        "Career opportunities,Living abroad,School,Traveling",
+        "Career opportunities,Living abroad,Traveling,Personal interest",
+        "Career opportunities,Living abroad,Traveling,Personal interest,School,Other",
+        "Career opportunities,Living abroad,Traveling,School,Personal interest",
+        "Career opportunities,Living abroad,Traveling,School,Personal interest,Other",
+        "Career opportunities,Other,Personal interest",
+        "Career opportunities,Other,Personal interest,Traveling",
+        "Career opportunities,Personal interest",
+        "Career opportunities,Personal interest,Living abroad",
+        "Career opportunities,Personal interest,Living abroad,Other",
+        "Career opportunities,Personal interest,Living abroad,School",
+        "Career opportunities,Personal interest,Living abroad,School,Traveling,Other",
+        "Career opportunities,Personal interest,Living abroad,Traveling",
+        "Career opportunities,Personal interest,Living abroad,Traveling,School",
+        "Career opportunities,Personal interest,Other",
+        "Career opportunities,Personal interest,Other,School,Traveling,Living abroad",
+        "Career opportunities,Personal interest,Other,Traveling,Living abroad,School",
+        "Career opportunities,Personal interest,Other,Traveling,School",
+        "Career opportunities,Personal interest,School",
+        "Career opportunities,Personal interest,School,Living abroad,Traveling",
+        "Career opportunities,Personal interest,School,Living abroad,Traveling,Other",
+        "Career opportunities,Personal interest,Traveling",
+        "Career opportunities,Personal interest,Traveling,Living abroad",
+        "Career opportunities,Personal interest,Traveling,Other",
+        "Career opportunities,School",
+        "Career opportunities,School,Living abroad,Personal interest",
+        "Career opportunities,School,Other,Living abroad,Traveling,Personal interest",
+        "Career opportunities,School,Personal interest",
+        "Career opportunities,School,Personal interest,Other",
+        "Career opportunities,School,Personal interest,Traveling",
+        "Career opportunities,School,Traveling,Living abroad,Personal interest",
+        "Career opportunities,Traveling",
+        "Career opportunities,Traveling,Living abroad",
+        "Career opportunities,Traveling,Living abroad,Personal interest",
+        "Career opportunities,Traveling,Living abroad,Personal interest,Other",
+        "Career opportunities,Traveling,Living abroad,Personal interest,Other,School",
+        "Career opportunities,Traveling,Living abroad,Personal interest,School",
+        "Career opportunities,Traveling,Living abroad,Personal interest,School,Other",
+        "Career opportunities,Traveling,Personal interest",
+        "Career opportunities,Traveling,Personal interest,Living abroad",
+        "Career opportunities,Traveling,Personal interest,Living abroad,Other",
+        "Career opportunities,Traveling,Personal interest,Other",
+        "Career opportunities,Traveling,Personal interest,Other,Living abroad,School",
+        "Career opportunities,Traveling,Personal interest,School,Living abroad",
+        "Career opportunities,Traveling,School",
+        "Career opportunities,Traveling,School,Living abroad,Other,Personal interest",
+        "Career opportunities,Traveling,School,Living abroad,Personal interest",
+        "Career opportunities,Traveling,School,Living abroad,Personal interest,Other",
+        "Career opportunities,Traveling,School,Personal interest",
+        "Career opportunities,Traveling,School,Personal interest,Other",
+        "Career opportunities,Traveling,School,Personal interest,Other,Living abroad",
+        "Communication at Work",
+        "Conversational Fluency",
+        "Getting a New Job",
+        "Living abroad",
+        "Living abroad,Career opportunities",
+        "Living abroad,Career opportunities,Personal interest",
+        "Living abroad,Career opportunities,Personal interest,Traveling",
+        "Living abroad,Career opportunities,Traveling,Personal interest",
+        "Living abroad,Career opportunities,Traveling,School,Personal interest,Other",
+        "Living abroad,Other,Personal interest,Traveling,Career opportunities",
+        "Living abroad,Personal interest",
+        "Living abroad,Personal interest,Traveling,Career opportunities",
+        "Living abroad,School",
+        "Living abroad,School,Career opportunities,Traveling,Personal interest",
+        "Living abroad,School,Personal interest,Traveling,Career opportunities,Other",
+        "Living abroad,Traveling,Career opportunities",
+        "Living abroad,Traveling,Career opportunities,School,Personal interest",
+        "Living abroad,Traveling,Career opportunities,School,Personal interest,Other",
+        "Not specified,Career opportunities",
+        "Not specified,Career opportunities,Living abroad",
+        "Not specified,Career opportunities,Living abroad,Personal interest,Other,Traveling",
+        "Not specified,Career opportunities,Living abroad,Personal interest,Traveling,School",
+        "Not specified,Career opportunities,School",
+        "Not specified,Living abroad,Personal interest,School,Career opportunities,Traveling",
+        "Not specified,Other",
+        "Not specified,Personal interest",
+        "Not specified,Traveling",
+        "Other",
+        "Other,Career opportunities,Traveling,Living abroad,School,Personal interest",
+        "Other,Career opportunities,Traveling,School,Personal interest",
+        "Other,Living abroad",
+        "Other,Personal interest,Career opportunities",
+        "Other,Personal interest,Living abroad,Career opportunities",
+        "Other,Personal interest,School,Career opportunities",
+        "Other,Personal interest,School,Living abroad,Traveling,Career opportunities",
+        "Other,School",
+        "Other,School,Personal interest,Living abroad,Traveling,Career opportunities",
+        "Personal interest,Career opportunities",
+        "Personal interest,Career opportunities,Living abroad",
+        "Personal interest,Career opportunities,Living abroad,Traveling",
+        "Personal interest,Career opportunities,Other",
+        "Personal interest,Career opportunities,School,Other",
+        "Personal interest,Career opportunities,Traveling,Living abroad",
+        "Personal interest,Career opportunities,Traveling,Living abroad,School",
+        "Personal interest,Living abroad",
+        "Personal interest,Living abroad,Career opportunities,Traveling",
+        "Personal interest,Other",
+        "Personal interest,Other,Career opportunities",
+        "Personal interest,Other,Career opportunities,Traveling,Living abroad,School",
+        "Personal interest,School,Career opportunities",
+        "Personal interest,School,Career opportunities,Living abroad",
+        "Personal interest,School,Career opportunities,Traveling,Living abroad,Other",
+        "Personal interest,School,Living abroad,Traveling,Career opportunities",
+        "Personal interest,School,Living abroad,Traveling,Career opportunities,Other",
+        "Personal interest,School,Traveling,Career opportunities,Living abroad,Other",
+        "Personal interest,Traveling,Career opportunities",
+        "School",
+        "School,Career opportunities",
+        "School,Career opportunities,Living abroad",
+        "School,Career opportunities,Personal interest",
+        "School,Career opportunities,Personal interest,Living abroad,Traveling",
+        "School,Career opportunities,Personal interest,Living abroad,Traveling,Other",
+        "School,Career opportunities,Personal interest,Traveling,Living abroad",
+        "School,Career opportunities,Traveling,Living abroad,Personal interest",
+        "School,Career opportunities,Traveling,Personal interest,Living abroad",
+        "School,Living abroad,Career opportunities",
+        "School,Living abroad,Career opportunities,Personal interest,Other",
+        "School,Living abroad,Career opportunities,Personal interest,Traveling",
+        "School,Personal interest",
+        "School,Personal interest,Career opportunities",
+        "School,Personal interest,Career opportunities,Other",
+        "School,Personal interest,Living abroad,Traveling,Career opportunities",
+        "School,Personal interest,Living abroad,Traveling,Career opportunities,Other",
+        "School,Personal interest,Other",
+        "School,Personal interest,Traveling",
+        "School,Personal interest,Traveling,Career opportunities,Other",
+        "School,Personal interest,Traveling,Living abroad,Career opportunities",
+        "School,Traveling,Other",
+        "Traveling",
+        "Traveling,Career opportunities,Living abroad",
+        "Traveling,Living abroad,School,Personal interest",
+        "Traveling,Personal interest",
+        "Traveling,Personal interest,Other",
+        "Traveling,Personal interest,School,Career opportunities",
+        "Traveling,School,Personal interest,Career opportunities",
+        "for daily life where they live",
+        "for school",
+        "for their career",
+        "for travel"
+      ]
+    },
+    {
+      "name": "demand_tier",
+      "coefs": {
+        "NA": -1.1903261534165095,
+        "bronze": 0.15802002946464386,
+        "gold": 0.8349902693989032,
+        "platinum": -0.14915107424131524,
+        "silver": 0.35047680542029247
+      },
+      "infrequent_coef": 0.0,
+      "infrequent_values": []
+    },
+    {
+      "name": "platform",
+      "coefs": {
+        "NA": -0.3051016834272124,
+        "android": 0.45604003096808216,
+        "ios": -0.14692847091485994
+      },
+      "infrequent_coef": 0.0,
+      "infrequent_values": []
+    },
+    {
+      "name": "messaging_platform",
+      "coefs": {
+        "NA": 0.4002175227433011,
+        "whatsapp": -0.31151356431245647
+      },
+      "infrequent_coef": -0.08469408180485229,
+      "infrequent_values": [
+        "line",
+        "messenger",
+        "sms",
+        "telegram",
+        "viber",
+        "wechat"
+      ]
+    },
+    {
+      "name": "tutor",
+      "coefs": {
+        "Adam": -0.40115545828130283,
+        "Alex": -0.40945537543618127,
+        "Connor": 0.4665792089514684,
+        "Jennie": 0.4980710763351744,
+        "Justin": 0.15843775386868672,
+        "Katy": -0.23172219094501043
+      },
+      "infrequent_coef": -0.07674513786682376,
+      "infrequent_values": [
+        "Alexa",
+        "Omar",
+        "Rex",
+        "Riley",
+        "Rion",
+        "Sarah"
+      ]
+    },
+    {
+      "name": "completed_tutorial",
+      "coefs": {
+        "true": -0.5637476585008057
+      },
+      "infrequent_coef": 0.5677575351268026,
+      "infrequent_values": [
+        "false"
+      ]
+    },
+    {
+      "name": "previous_experience",
+      "coefs": {
+        "NA": -0.1256806975664821
+      },
+      "infrequent_coef": 0.129690574192484,
+      "infrequent_values": [
+        "frequency:daily,context:media,history:onOff,goal:career",
+        "frequency:daily,context:work,history:regularly,goal:career",
+        "frequency:monthly,context:media,history:onOff,goal:travel",
+        "frequency:monthly,context:social,history:regularly,goal:career",
+        "frequency:monthly,context:work,history:never,goal:career",
+        "frequency:never,context:none,history:longAgo,goal:travel",
+        "frequency:never,context:none,history:never,goal:travel",
+        "frequency:weekly,context:media,history:onOff,goal:dailyLife",
+        "frequency:weekly,context:media,history:regularly,goal:career",
+        "frequency:weekly,context:none,history:onOff,goal:career",
+        "frequency:weekly,context:work,history:longAgo,goal:career",
+        "frequency:weekly,context:work,history:onOff,goal:dailyLife",
+        "goal:move,ability:comfortable,speakingPartners:work,learningStyle:speaking,commitment:serious",
+        "goal:move,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:casual",
+        "goal:school,ability:simple,speakingPartners:school,learningStyle:other,commitment:regular",
+        "goal:school,ability:words,speakingPartners:nobody,learningStyle:grammar,commitment:casual",
+        "goal:school,ability:words,speakingPartners:nobody,learningStyle:other,commitment:serious",
+        "goal:school,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:exploring",
+        "goal:travel,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:exploring",
+        "goal:work,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:exploring",
+        "goal:work,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:regular"
+      ]
+    },
+    {
+      "name": "attribution",
+      "coefs": {
+        "NA": -0.2582254897730797,
+        "facebook": 0.20823967363248597,
+        "instagram": 0.005345196935037976,
+        "other": -0.23749031184993638,
+        "referral": 0.10731887213924866,
+        "tiktok": -0.22731088500647004,
+        "youtube": -0.1311684938580829
+      },
+      "infrequent_coef": 0.5373013144068257,
+      "infrequent_values": [
+        "google"
+      ]
+    }
+  ],
+  "tiers": {
+    "high": 0.2693,
+    "medium": 0.1305
+  }
+}
