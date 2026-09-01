@@ -124,6 +124,8 @@ interface UserMeta {
   last_logged_in: string | null;
   payment_status: string | null;
   platform: string | null;
+  trial_started_at: string | null;
+  became_active_at: string | null;
 }
 
 const USER_INFO_COLUMNS =
@@ -131,7 +133,59 @@ const USER_INFO_COLUMNS =
   "level, reason, daily_streak, time_zone, attribution, tutor, tutor_accent, " +
   "demand_tier, messaging_platform, previous_experience, completed_tutorial, " +
   "lesson_credits, is_creator, left_review, upsell, last_logged_in, " +
-  "payment_status, platform";
+  "payment_status, platform, trial_started_at, became_active_at";
+
+// Trial outcome derived from the ground-truth trial_started_at / became_active_at
+// on user_info (added by the conversion-tracking work). This is the ACTUAL
+// outcome, not a prediction: "converted" = became active out of a trial;
+// "churned" = the trial is old enough to have resolved with no activation;
+// "in_trial" = trial started recently, outcome not yet certain; "none" = no trial
+// recorded. Analysis of resolved trials: ~88% of conversions land by day 14 and
+// p90 ≈ 30 days, so a trial with no activation after TRIAL_RESOLVE_DAYS is safely
+// counted as churned; more recent ones stay "in trial" rather than be mislabeled.
+const TRIAL_RESOLVE_DAYS = 21;
+
+export type TrialOutcome = "converted" | "churned" | "in_trial" | "none";
+
+const TRIAL_OUTCOME_META: Record<
+  TrialOutcome,
+  { label: string; variant: string; hint: string }
+> = {
+  converted: {
+    label: "Converted",
+    variant: "converted",
+    hint: "Started a trial and became an active (paying) user.",
+  },
+  churned: {
+    label: "Churned",
+    variant: "churned",
+    hint: `Trial ended without converting (no activation ${TRIAL_RESOLVE_DAYS}+ days after it started).`,
+  },
+  in_trial: {
+    label: "In trial",
+    variant: "in-trial",
+    hint: `Trial started in the last ${TRIAL_RESOLVE_DAYS} days — outcome not yet certain.`,
+  },
+  none: {
+    label: "No trial",
+    variant: "none",
+    hint: "No trial recorded for this user.",
+  },
+};
+
+// Order for the filter dropdown (skips "All", which the UI prepends).
+const TRIAL_OUTCOME_ORDER: TrialOutcome[] = ["converted", "churned", "in_trial", "none"];
+
+function trialOutcome(
+  meta: { trial_started_at: string | null; became_active_at: string | null } | undefined | null,
+): TrialOutcome {
+  if (!meta) return "none";
+  if (meta.became_active_at) return "converted";
+  if (!meta.trial_started_at) return "none";
+  const started = new Date(meta.trial_started_at).getTime();
+  if (Number.isNaN(started)) return "none";
+  return started <= Date.now() - TRIAL_RESOLVE_DAYS * 86_400_000 ? "churned" : "in_trial";
+}
 
 // Map a payment_status to a badge variant + label.
 function statusBadge(status: string | null): { variant: string; label: string } {
@@ -759,6 +813,19 @@ const TranscriptCard: React.FC<{
                   </span>
                 );
               })()}
+              {(() => {
+                const o = trialOutcome(user);
+                if (o === "none") return null;
+                const m = TRIAL_OUTCOME_META[o];
+                return (
+                  <span
+                    className={`user-trial-badge user-trial-badge--${m.variant}`}
+                    title={m.hint}
+                  >
+                    {m.label}
+                  </span>
+                );
+              })()}
               {user.demand_tier && (
                 <span
                   className={`user-tier-badge user-tier-badge--${user.demand_tier.toLowerCase()}`}
@@ -928,6 +995,7 @@ const AllTranscripts: React.FC = () => {
   // the NOT_RECORDED option surfaces rather than hides.
   const [filterExitPhase, setFilterExitPhase] = useState<string>("All");
   const [filterExitTrigger, setFilterExitTrigger] = useState<string>("All");
+  const [filterTrialOutcome, setFilterTrialOutcome] = useState<string>("All");
   const [filterLessonInput, setFilterLessonInput] = useState<string>("");
   // "is" matches the given lesson id; "isNot" excludes it.
   const [filterLessonMode, setFilterLessonMode] = useState<"is" | "isNot">("is");
@@ -1199,9 +1267,10 @@ const AllTranscripts: React.FC = () => {
       if (filterTutor !== "All" && (meta?.tutor ?? null) !== filterTutor) return false;
       if (filterStatus !== "All" && statusKey(meta?.payment_status ?? null) !== filterStatus) return false;
       if (filterPlatform !== "All" && platformKey(meta?.platform ?? null) !== filterPlatform) return false;
+      if (filterTrialOutcome !== "All" && trialOutcome(meta) !== filterTrialOutcome) return false;
       return true;
     });
-  }, [rows, userMeta, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger]);
+  }, [rows, userMeta, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome]);
 
   const toggleSelect = useCallback((row: TranscriptRow) => {
     setSelected((prev) => {
@@ -1256,6 +1325,7 @@ const AllTranscripts: React.FC = () => {
     filterEndedEarly !== "All" ||
     filterExitPhase !== "All" ||
     filterExitTrigger !== "All" ||
+    filterTrialOutcome !== "All" ||
     filterLessonInput.trim() !== "";
 
   // Keep loading while the sentinel stays in view.
@@ -1563,6 +1633,26 @@ const AllTranscripts: React.FC = () => {
               </svg>
             </label>
 
+            <label className="tx-chip" data-active={filterTrialOutcome !== "All"}>
+              <span className="tx-chip-label">Trial outcome</span>
+              <select
+                className="tx-chip-select"
+                value={filterTrialOutcome}
+                onChange={(e) => setFilterTrialOutcome(e.target.value)}
+                title="Did the user's trial actually convert to paying? (from trial_started_at / became_active_at)"
+              >
+                <option value="All">Any</option>
+                {TRIAL_OUTCOME_ORDER.map((o) => (
+                  <option key={o} value={o}>
+                    {TRIAL_OUTCOME_META[o].label}
+                  </option>
+                ))}
+              </select>
+              <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </label>
+
             {anyFilterActive && (
               <button
                 className="tx-clear-btn"
@@ -1580,6 +1670,7 @@ const AllTranscripts: React.FC = () => {
                   setFilterEndedEarly("All");
                   setFilterExitPhase("All");
                   setFilterExitTrigger("All");
+                  setFilterTrialOutcome("All");
                   setFilterLessonInput("");
                 }}
               >

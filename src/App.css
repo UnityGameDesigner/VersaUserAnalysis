@@ -1944,6 +1944,19 @@ body,
 .user-tier-badge--gold { background: #fbeec4; color: #876a10; }
 .user-tier-badge--platinum { background: #e4e8f6; color: #444f8c; }
 
+/* Actual trial outcome (converted / churned / in-trial) from
+   trial_started_at + became_active_at. Mirrors .user-tier-badge. */
+.user-trial-badge {
+  display: inline-flex;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+.user-trial-badge--converted { background: #d7f5e3; color: #146c43; }
+.user-trial-badge--churned   { background: #fbe0e0; color: #a12a2a; }
+.user-trial-badge--in-trial  { background: #fdeecb; color: #8a6410; }
+
 .user-platform-badge {
   display: inline-flex;
   padding: 0.18rem 0.6rem;
