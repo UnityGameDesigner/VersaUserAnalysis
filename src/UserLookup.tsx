@@ -67,6 +67,40 @@ interface NotificationRow {
   error_detail: string | null;
 }
 
+// A learner's goal (from user_goals via get_user_goals RPC). Numeric columns
+// arrive from Supabase as strings, so coerce with Number() when rendering.
+interface UserGoal {
+  goal_name: string;
+  level_code: string | null;
+  is_primary: boolean | null;
+  status: string | null;
+  progress_score: number | null;
+  readiness_score: number | null;
+  target_date: string | null;
+  last_activity_at: string | null;
+  user_motivation: string | null;
+}
+
+// A learner's current skill mastery (from user_skills via get_user_skills RPC).
+interface UserSkill {
+  skill_name: string;
+  level_code: string | null;
+  state: string | null;
+  mastery_score: number | null;
+  confidence_score: number | null;
+  last_practiced_at: string | null;
+}
+
+// Skill state → label + color. Progression: introduced → practiced →
+// demonstrated → retained → mastered.
+const SKILL_STATE_META: Record<string, { label: string; color: string }> = {
+  introduced: { label: "Introduced", color: "#9ca3af" },
+  practiced: { label: "Practiced", color: "#0ea5e9" },
+  demonstrated: { label: "Demonstrated", color: "#0d9488" },
+  retained: { label: "Retained", color: "#16a34a" },
+  mastered: { label: "Mastered", color: "#a16207" },
+};
+
 interface CompletedLesson {
   id: number;
   created_at: string;
@@ -202,6 +236,100 @@ const NotificationsPanel: React.FC<{ notifications: NotificationRow[] }> = ({ no
             </p>
           )}
         </>
+      )}
+    </div>
+  );
+};
+
+// Learner goal progress + skill development (from get_user_goals /
+// get_user_skills RPCs). Goals: usually one active goal with a progress bar.
+// Skills: per-skill mastery — only the more engaged users have any. Hidden
+// entirely when the user has neither.
+const GoalsSkillsPanel: React.FC<{ goals: UserGoal[]; skills: UserSkill[] }> = ({
+  goals,
+  skills,
+}) => {
+  if (goals.length === 0 && skills.length === 0) return null;
+  const pct = (v: number | null) => Math.round(Number(v ?? 0) * 100);
+  const mastered = skills.filter(
+    (s) => s.state === "mastered" || s.state === "retained",
+  ).length;
+
+  return (
+    <div className="lookup-lessons">
+      <h3 className="lookup-lessons-title">Goals &amp; Skill Development</h3>
+
+      <div className="gs-subhead">Goal progress</div>
+      {goals.length === 0 ? (
+        <p className="gs-empty">No goal set.</p>
+      ) : (
+        <div className="gs-goals">
+          {goals.map((g, i) => (
+            <div className="gs-goal" key={i}>
+              <div className="gs-goal-head">
+                <span className="gs-goal-name">{g.goal_name}</span>
+                {g.level_code && <span className="level-pill">{g.level_code}</span>}
+                {g.is_primary && <span className="gs-tag gs-tag--primary">Primary</span>}
+                {g.status && <span className="gs-tag">{g.status.replace(/_/g, " ")}</span>}
+              </div>
+              <div className="gs-bar" title={`Progress ${pct(g.progress_score)}%`}>
+                <div
+                  className="gs-bar-fill gs-bar-fill--progress"
+                  style={{ width: `${pct(g.progress_score)}%` }}
+                />
+              </div>
+              <div className="gs-goal-meta">
+                <span>
+                  <strong>{pct(g.progress_score)}%</strong> progress
+                </span>
+                {g.readiness_score != null && <span>{pct(g.readiness_score)}% ready</span>}
+                {g.last_activity_at && (
+                  <span>active {format(new Date(g.last_activity_at), "MMM d")}</span>
+                )}
+              </div>
+              {g.user_motivation && (
+                <p className="gs-motivation">“{g.user_motivation}”</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="gs-subhead" style={{ marginTop: "0.9rem" }}>
+        Skill development
+        {skills.length > 0 && ` · ${skills.length} tracked · ${mastered} mastered/retained`}
+      </div>
+      {skills.length === 0 ? (
+        <p className="gs-empty">No skill data yet.</p>
+      ) : (
+        <div className="gs-skills">
+          {skills.map((s, i) => {
+            const m =
+              SKILL_STATE_META[s.state ?? ""] ?? {
+                label: s.state ?? "—",
+                color: "#9ca3af",
+              };
+            const mp = pct(s.mastery_score);
+            return (
+              <div className="gs-skill" key={i}>
+                <div className="gs-skill-top">
+                  <span className="gs-skill-name">{s.skill_name}</span>
+                  {s.level_code && <span className="level-pill">{s.level_code}</span>}
+                  <span
+                    className="gs-state"
+                    style={{ color: m.color, borderColor: m.color }}
+                  >
+                    {m.label}
+                  </span>
+                  <span className="gs-skill-pct">{mp}%</span>
+                </div>
+                <div className="gs-bar">
+                  <div className="gs-bar-fill" style={{ width: `${mp}%`, background: m.color }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -649,6 +777,8 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
   const [user, setUser] = useState<UserInfo | null>(null);
   const [lessons, setLessons] = useState<CompletedLesson[]>([]);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
+  const [goals, setGoals] = useState<UserGoal[]>([]);
+  const [skills, setSkills] = useState<UserSkill[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
@@ -670,6 +800,8 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
     setUser(null);
     setLessons([]);
     setNotifications([]);
+    setGoals([]);
+    setSkills([]);
     setSearched(true);
 
     try {
@@ -689,6 +821,15 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
 
       if (userErr) throw new Error(`User not found: ${userErr.message}`);
       setUser(userData);
+
+      // Goal progress + skill development (non-fatal — panel is hidden if empty
+      // or if these fail). Names are resolved server-side by the RPCs.
+      const [{ data: goalData }, { data: skillData }] = await Promise.all([
+        supabase.rpc("get_user_goals", { p_user_id: trimmed }),
+        supabase.rpc("get_user_skills", { p_user_id: trimmed }),
+      ]);
+      setGoals((goalData as UserGoal[]) ?? []);
+      setSkills((skillData as UserSkill[]) ?? []);
 
       // Fetch all completed lessons for this user (paginated)
       let allLessons: CompletedLesson[] = [];
@@ -1066,6 +1207,9 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 </div>
               )}
             </div>
+
+            {/* Goal progress + skill development */}
+            <GoalsSkillsPanel goals={goals} skills={skills} />
 
             {/* Notifications sent to this user */}
             <NotificationsPanel notifications={notifications} />

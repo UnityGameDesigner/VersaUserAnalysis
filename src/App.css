@@ -1972,6 +1972,33 @@ body,
 .user-conv-badge--medium { color: #8a6410; }
 .user-conv-badge--low    { color: #6b7280; }
 
+/* Goals & skill development panel (User Lookup) */
+.gs-subhead {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+  margin-bottom: 0.5rem;
+}
+.gs-empty { color: #9ca3af; font-size: 0.85rem; margin: 0 0 0.25rem; }
+.gs-goals { display: flex; flex-direction: column; gap: 0.75rem; }
+.gs-goal { background: #f8f9fb; border: 1px solid #eceef2; border-radius: 10px; padding: 0.75rem 0.9rem; }
+.gs-goal-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.gs-goal-name { font-weight: 700; color: #1f2430; }
+.gs-tag { font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 999px; background: #eceef2; color: #545a66; text-transform: capitalize; }
+.gs-tag--primary { background: #e0e7ff; color: #4338ca; }
+.gs-bar { height: 8px; border-radius: 999px; background: #eceef2; overflow: hidden; }
+.gs-bar-fill { height: 100%; border-radius: 999px; transition: width 0.3s ease; }
+.gs-bar-fill--progress { background: linear-gradient(90deg, #818cf8, #4f46e5); }
+.gs-goal-meta { display: flex; gap: 0.75rem; flex-wrap: wrap; font-size: 0.78rem; color: #6b7280; margin-top: 0.4rem; }
+.gs-motivation { font-size: 0.82rem; color: #6b7280; font-style: italic; margin: 0.4rem 0 0; }
+.gs-skills { display: flex; flex-direction: column; gap: 0.6rem; }
+.gs-skill-top { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem; }
+.gs-skill-name { font-weight: 600; color: #1f2430; font-size: 0.9rem; }
+.gs-skill-pct { margin-left: auto; font-weight: 700; color: #545a66; font-size: 0.82rem; }
+.gs-state { font-size: 0.66rem; font-weight: 700; padding: 0.06rem 0.45rem; border: 1px solid; border-radius: 999px; }
+
 .user-platform-badge {
   display: inline-flex;
   padding: 0.18rem 0.6rem;
