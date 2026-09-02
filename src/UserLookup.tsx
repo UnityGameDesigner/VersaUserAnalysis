@@ -22,6 +22,8 @@ import { getSavedEvaluation, saveEvaluation } from "./lib/evalStore";
 import TutorEvalPanel from "./TutorEvalPanel";
 import SpeakingProgress from "./SpeakingProgress";
 import { LessonBadges } from "./LessonBadges";
+import { trialOutcome, TRIAL_OUTCOME_META } from "./lib/trialOutcome";
+import { scoreConversion, CONV_TIER_META } from "./lib/conversionScore";
 import { analyzeCancellation, reasonMeta, type CancelAnalysis } from "./lib/analyzeCancellation";
 import { getCancelAnalysis, saveCancelAnalysis } from "./lib/cancelAnalysisStore";
 import { format } from "date-fns";
@@ -44,6 +46,14 @@ interface UserInfo {
   payment_status: string;
   canceled_at: string | null;
   last_completed_at: string | null;
+  // For trial-outcome + conversion-likelihood pills (see lib/trialOutcome,
+  // lib/conversionScore). The extra demographic fields feed the score.
+  trial_started_at: string | null;
+  became_active_at: string | null;
+  platform: string | null;
+  messaging_platform: string | null;
+  completed_tutorial: boolean | null;
+  previous_experience: string | null;
 }
 
 interface NotificationRow {
@@ -670,7 +680,8 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           `user_id, preferred_name, age, gender, native_language,
            learning_language, level, reason, tutor, daily_streak, last_logged_in,
            time_zone, attribution, demand_tier, payment_status,
-           canceled_at, last_completed_at`,
+           canceled_at, last_completed_at, trial_started_at, became_active_at,
+           platform, messaging_platform, completed_tutorial, previous_experience`,
         )
         .eq("user_id", trimmed)
         .limit(1)
@@ -880,6 +891,32 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 >
                   {user.payment_status}
                 </span>
+                {(() => {
+                  const o = trialOutcome(user);
+                  if (o === "none") return null;
+                  const m = TRIAL_OUTCOME_META[o];
+                  return (
+                    <span
+                      className={`user-trial-badge user-trial-badge--${m.variant}`}
+                      title={m.hint}
+                    >
+                      {m.label}
+                    </span>
+                  );
+                })()}
+                {(() => {
+                  const cs = scoreConversion(user as unknown as Record<string, unknown>);
+                  if (!cs) return null;
+                  const m = CONV_TIER_META[cs.tier];
+                  return (
+                    <span
+                      className={`user-conv-badge user-conv-badge--${m.variant}`}
+                      title={`${m.hint} This user: ${Math.round(cs.prob * 100)}%.`}
+                    >
+                      ≈ {m.label}
+                    </span>
+                  );
+                })()}
                 <button
                   className="lookup-export-btn"
                   onClick={handleExportAll}

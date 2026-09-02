@@ -12,7 +12,17 @@ import {
   exitFilterLabel,
 } from "./LessonBadges";
 import { exportTranscriptsZip } from "./lib/exportTranscripts";
-import { scoreConversion, CONV_MODEL_AUC, type ConvTier } from "./lib/conversionScore";
+import {
+  scoreConversion,
+  CONV_MODEL_AUC,
+  CONV_TIER_META,
+  CONV_TIER_ORDER,
+} from "./lib/conversionScore";
+import {
+  trialOutcome,
+  TRIAL_OUTCOME_META,
+  TRIAL_OUTCOME_ORDER,
+} from "./lib/trialOutcome";
 import { evaluateTutor, type TutorEvaluation } from "./lib/evaluateTutor";
 import { getSavedEvaluation, saveEvaluation } from "./lib/evalStore";
 import {
@@ -135,81 +145,6 @@ const USER_INFO_COLUMNS =
   "demand_tier, messaging_platform, previous_experience, completed_tutorial, " +
   "lesson_credits, is_creator, left_review, upsell, last_logged_in, " +
   "payment_status, platform, trial_started_at, became_active_at";
-
-// Trial outcome derived from the ground-truth trial_started_at / became_active_at
-// on user_info (added by the conversion-tracking work). This is the ACTUAL
-// outcome, not a prediction: "converted" = became active out of a trial;
-// "churned" = the trial is old enough to have resolved with no activation;
-// "in_trial" = trial started recently, outcome not yet certain; "none" = no trial
-// recorded. Analysis of resolved trials: ~88% of conversions land by day 14 and
-// p90 ≈ 30 days, so a trial with no activation after TRIAL_RESOLVE_DAYS is safely
-// counted as churned; more recent ones stay "in trial" rather than be mislabeled.
-const TRIAL_RESOLVE_DAYS = 21;
-
-export type TrialOutcome = "converted" | "churned" | "in_trial" | "none";
-
-const TRIAL_OUTCOME_META: Record<
-  TrialOutcome,
-  { label: string; variant: string; hint: string }
-> = {
-  converted: {
-    label: "Converted",
-    variant: "converted",
-    hint: "Started a trial and became an active (paying) user.",
-  },
-  churned: {
-    label: "Churned",
-    variant: "churned",
-    hint: `Trial ended without converting (no activation ${TRIAL_RESOLVE_DAYS}+ days after it started).`,
-  },
-  in_trial: {
-    label: "In trial",
-    variant: "in-trial",
-    hint: `Trial started in the last ${TRIAL_RESOLVE_DAYS} days — outcome not yet certain.`,
-  },
-  none: {
-    label: "No trial",
-    variant: "none",
-    hint: "No trial recorded for this user.",
-  },
-};
-
-// Order for the filter dropdown (skips "All", which the UI prepends).
-const TRIAL_OUTCOME_ORDER: TrialOutcome[] = ["converted", "churned", "in_trial", "none"];
-
-// Predicted trial-conversion likelihood tier (from the demographics logistic
-// scorecard in lib/conversionScore). A model lean, not a certainty — see the
-// hint text. High ≈ 42% convert, Medium ≈ 21%, Low ≈ 7% (base ~18%).
-const CONV_TIER_META: Record<ConvTier, { label: string; variant: string; hint: string }> = {
-  high: {
-    label: "High",
-    variant: "high",
-    hint: `Predicted trial-conversion likelihood: HIGH (top ~20%, historically ~42% convert). Signup-demographics model, AUC ≈ ${CONV_MODEL_AUC} — a lean, not a certainty.`,
-  },
-  medium: {
-    label: "Medium",
-    variant: "medium",
-    hint: `Predicted trial-conversion likelihood: MEDIUM (historically ~21% convert). Model AUC ≈ ${CONV_MODEL_AUC} — a lean, not a certainty.`,
-  },
-  low: {
-    label: "Low",
-    variant: "low",
-    hint: `Predicted trial-conversion likelihood: LOW (bottom ~50%, historically ~7% convert). Model AUC ≈ ${CONV_MODEL_AUC} — a lean, not a certainty.`,
-  },
-};
-
-const CONV_TIER_ORDER: ConvTier[] = ["high", "medium", "low"];
-
-function trialOutcome(
-  meta: { trial_started_at: string | null; became_active_at: string | null } | undefined | null,
-): TrialOutcome {
-  if (!meta) return "none";
-  if (meta.became_active_at) return "converted";
-  if (!meta.trial_started_at) return "none";
-  const started = new Date(meta.trial_started_at).getTime();
-  if (Number.isNaN(started)) return "none";
-  return started <= Date.now() - TRIAL_RESOLVE_DAYS * 86_400_000 ? "churned" : "in_trial";
-}
 
 // Map a payment_status to a badge variant + label.
 function statusBadge(status: string | null): { variant: string; label: string } {

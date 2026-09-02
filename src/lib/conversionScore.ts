@@ -38,6 +38,32 @@ const CARD = scorecard as unknown as {
 
 export const CONV_MODEL_AUC = CARD.cv_auc;
 
+// Shared tier metadata (labels/variants/hints) for the likelihood pill + filter,
+// used by both All Transcripts and User Lookup. High ≈ 42% convert, Medium ≈ 21%,
+// Low ≈ 7% (base ~18%) — a model lean, not a certainty.
+export const CONV_TIER_META: Record<
+  ConvTier,
+  { label: string; variant: string; hint: string }
+> = {
+  high: {
+    label: "High",
+    variant: "high",
+    hint: `Predicted trial-conversion likelihood: HIGH (top ~20%, historically ~42% convert). Signup-demographics model, AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
+  },
+  medium: {
+    label: "Medium",
+    variant: "medium",
+    hint: `Predicted trial-conversion likelihood: MEDIUM (historically ~21% convert). Model AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
+  },
+  low: {
+    label: "Low",
+    variant: "low",
+    hint: `Predicted trial-conversion likelihood: LOW (bottom ~50%, historically ~7% convert). Model AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
+  },
+};
+
+export const CONV_TIER_ORDER: ConvTier[] = ["high", "medium", "low"];
+
 // Normalize a raw field to the string form the model was trained on:
 // null/blank → "NA"; booleans → "true"/"false"; everything else → String().
 function catValue(v: unknown): string {
