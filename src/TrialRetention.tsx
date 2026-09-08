@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { supabase } from "./lib/supabase";
 import { getCountryFromTimezone } from "./lib/timezone";
+import { scoreConversion, CONV_TIER_META } from "./lib/conversionScore";
 import {
   LineChart,
   Line,
@@ -98,6 +99,27 @@ interface DayUser {
   age: string | null;
   time_zone: string | null;
   active_days: number;
+  lessons: number;
+  // Device + the demographic fields the conversion scorecard needs.
+  platform: string | null;
+  gender: string | null;
+  native_language: string | null;
+  level: string | null;
+  reason: string | null;
+  demand_tier: string | null;
+  messaging_platform: string | null;
+  tutor: string | null;
+  completed_tutorial: boolean | null;
+  previous_experience: string | null;
+  attribution: string | null;
+}
+
+// Compact device label from user_info.platform (see the User Lookup device badge).
+function deviceLabel(platform: string | null): { icon: string; label: string; variant: string } {
+  const p = (platform ?? "").toLowerCase();
+  if (p === "ios") return { icon: "🍎", label: "iOS", variant: "ios" };
+  if (p === "android") return { icon: "🤖", label: "Android", variant: "android" };
+  return { icon: "📱", label: "Unknown", variant: "unknown" };
 }
 // user_info.age is TEXT with "0"/"-1" unset sentinels — show real ages only.
 function prettyAge(age: string | null): string {
@@ -247,6 +269,18 @@ const TrialRetention: React.FC = () => {
               age: (r.age as string) ?? null,
               time_zone: (r.time_zone as string) ?? null,
               active_days: Number(r.active_days ?? 0),
+              lessons: Number(r.lessons ?? 0),
+              platform: (r.platform as string) ?? null,
+              gender: (r.gender as string) ?? null,
+              native_language: (r.native_language as string) ?? null,
+              level: (r.level as string) ?? null,
+              reason: (r.reason as string) ?? null,
+              demand_tier: (r.demand_tier as string) ?? null,
+              messaging_platform: (r.messaging_platform as string) ?? null,
+              tutor: (r.tutor as string) ?? null,
+              completed_tutorial: (r.completed_tutorial as boolean) ?? null,
+              previous_experience: (r.previous_experience as string) ?? null,
+              attribution: (r.attribution as string) ?? null,
             })),
       );
       setDayUsersLoading(false);
@@ -823,8 +857,11 @@ const TrialRetention: React.FC = () => {
                             <th>Country</th>
                             <th>Age</th>
                             <th>Learning</th>
+                            <th>Device</th>
                             <th>Status</th>
                             <th title="Distinct days with a completed lesson, in the 7-day trial window">Active days</th>
+                            <th title="Total lessons completed in the 7-day trial window (engagement)">Lessons</th>
+                            <th title="Predicted trial-conversion likelihood from the signup-demographics scorecard (a lean, not a certainty)">Likely convert</th>
                             <th></th>
                           </tr>
                         </thead>
@@ -848,6 +885,19 @@ const TrialRetention: React.FC = () => {
                                 <td>{prettyAge(u.age)}</td>
                                 <td>{prettyLang(u.learning_language)}</td>
                                 <td>
+                                  {(() => {
+                                    const d = deviceLabel(u.platform);
+                                    return (
+                                      <span
+                                        className={`device-badge device-badge--${d.variant}`}
+                                        title={d.variant === "unknown" ? "Device unknown (user_info.platform not set)" : `Device: ${d.label}`}
+                                      >
+                                        {d.icon} {d.label}
+                                      </span>
+                                    );
+                                  })()}
+                                </td>
+                                <td>
                                   {st ? (
                                     <span className={`plan-pill plan-pill--${statusVariant(u.payment_status)}`}>
                                       {st === "PAST_DUE" ? "Past Due" : st.charAt(0) + st.slice(1).toLowerCase()}
@@ -857,6 +907,22 @@ const TrialRetention: React.FC = () => {
                                   )}
                                 </td>
                                 <td>{u.active_days}</td>
+                                <td>{u.lessons}</td>
+                                <td>
+                                  {(() => {
+                                    const cs = scoreConversion(u as unknown as Record<string, unknown>);
+                                    if (!cs) return "—";
+                                    const m = CONV_TIER_META[cs.tier];
+                                    return (
+                                      <span
+                                        className={`user-conv-badge user-conv-badge--${m.variant}`}
+                                        title={`${m.hint} This user: ${Math.round(cs.prob * 100)}%.`}
+                                      >
+                                        ≈ {m.label} {Math.round(cs.prob * 100)}%
+                                      </span>
+                                    );
+                                  })()}
+                                </td>
                                 <td>
                                   <a
                                     href={href}
