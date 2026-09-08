@@ -65,13 +65,59 @@ function tutorEvalVertexProxy(
     }
   }
 
+  // Batch translation via the same Gemini client. Reliable (no per-IP quota like
+  // the public gtx endpoint), one request for a whole conversation, and it keeps
+  // input order/length. POST { texts: string[] } -> { translations: string[] }.
+  const translateHandler = async (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== 'POST') {
+      res.statusCode = 405
+      res.end()
+      return
+    }
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    res.setHeader('Content-Type', 'application/json')
+    try {
+      const { texts } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (!Array.isArray(texts) || texts.length === 0) {
+        res.end(JSON.stringify({ translations: [] }))
+        return
+      }
+      const ai = await getClient()
+      const response = await ai.models.generateContent({
+        model,
+        contents:
+          'Translate each string in this JSON array to natural English. Return ONLY a ' +
+          'JSON array of strings of the SAME length and order. If a string is already ' +
+          'English, return it unchanged.\n\n' +
+          JSON.stringify(texts),
+        config: {
+          systemInstruction:
+            'You are a translation engine. Output only a JSON array of translated ' +
+            'strings, exactly the same length and order as the input array.',
+          responseMimeType: 'application/json',
+          responseJsonSchema: { type: 'array', items: { type: 'string' } },
+        },
+      })
+      const translations = JSON.parse(response.text ?? '[]')
+      res.end(JSON.stringify({ translations }))
+    } catch (e) {
+      clientPromise = null
+      const status = (e as { status?: number }).status
+      res.statusCode = typeof status === 'number' ? status : 500
+      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }))
+    }
+  }
+
   return {
     name: 'tutor-eval-vertex-proxy',
     configureServer(server) {
       server.middlewares.use('/api/evaluate-tutor', handler)
+      server.middlewares.use('/api/translate-batch', translateHandler)
     },
     configurePreviewServer(server) {
       server.middlewares.use('/api/evaluate-tutor', handler)
+      server.middlewares.use('/api/translate-batch', translateHandler)
     },
   }
 }

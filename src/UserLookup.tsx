@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./lib/supabase";
-import { translateMany } from "./lib/translate";
+import { translateBatch } from "./lib/translate";
 import { parseTranscript } from "./lib/lessonMetrics";
 import { exportTranscriptsZip } from "./lib/exportTranscripts";
 import {
@@ -637,7 +637,7 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
     setTranslatingConv(true);
     setConvTranslateError(null);
     try {
-      const results = await translateMany(messages.map((m) => m.text));
+      const results = await translateBatch(messages.map((m) => m.text));
       setConvTranslations(results);
       setShowConvTranslation(true);
     } catch (e) {

@@ -64,6 +64,97 @@ export async function translateMany(texts: string[], concurrency = 5): Promise<s
   return results;
 }
 
+// Translate a sequence of lines (e.g. conversation turns) using as FEW gtx
+// requests as possible. Firing one request per line trips gtx's per-IP rate
+// limit on long transcripts, so we batch lines into chunks, translate each chunk
+// as a single newline-joined request, and split the result back by line. If a
+// chunk's translation doesn't split into the expected number of lines (gtx
+// occasionally merges/splits lines), that chunk falls back to per-line
+// translation so the mapping stays correct. Preserves order; empty lines pass
+// through untranslated. A 35-turn transcript goes from ~35 requests to ~3.
+export async function translateLines(texts: string[]): Promise<string[]> {
+  const MAX_LINES = 15; // lines per request
+  const MAX_CHARS = 2500; // keep the encoded gtx URL well under length limits
+
+  const chunks: number[][] = [];
+  let cur: number[] = [];
+  let curChars = 0;
+  texts.forEach((t, i) => {
+    const len = t.length + 1;
+    if (cur.length > 0 && (cur.length >= MAX_LINES || curChars + len > MAX_CHARS)) {
+      chunks.push(cur);
+      cur = [];
+      curChars = 0;
+    }
+    cur.push(i);
+    curChars += len;
+  });
+  if (cur.length) chunks.push(cur);
+
+  const out = new Array<string>(texts.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const ci = next++;
+      if (ci >= chunks.length) return;
+      const idxs = chunks[ci];
+      // One physical line per message (collapse any internal newlines) so the
+      // response can be split back reliably.
+      const lines = idxs.map((i) => texts[i].replace(/\s*\n\s*/g, " ").trim());
+      if (lines.every((l) => !l)) {
+        idxs.forEach((i) => (out[i] = texts[i]));
+        continue;
+      }
+      let mapped = false;
+      try {
+        const parts = (await translateCached(lines.join("\n"))).split("\n");
+        if (parts.length === idxs.length) {
+          idxs.forEach((i, k) => (out[i] = texts[i].trim() ? parts[k] : texts[i]));
+          mapped = true;
+        }
+      } catch {
+        // fall through to per-line below
+      }
+      if (!mapped) {
+        const perLine = await translateMany(
+          idxs.map((i) => texts[i]),
+          3,
+        );
+        idxs.forEach((i, k) => (out[i] = perLine[k]));
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(2, chunks.length || 1) }, worker));
+  return out;
+}
+
+// Translate a whole conversation reliably. Primary path is the dev server's
+// /api/translate-batch (Gemini) — one request, no per-IP rate limit, preserves
+// order/length. Falls back to the batched gtx path (translateLines) if Gemini is
+// unavailable or returns the wrong number of lines. Empty inputs pass through.
+export async function translateBatch(texts: string[]): Promise<string[]> {
+  if (texts.length === 0) return [];
+  try {
+    const res = await fetch("/api/translate-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texts }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const t = json?.translations;
+      if (Array.isArray(t) && t.length === texts.length) {
+        return texts.map((orig, i) =>
+          typeof t[i] === "string" && t[i].trim() ? t[i] : orig,
+        );
+      }
+    }
+  } catch {
+    // fall through to gtx
+  }
+  return translateLines(texts);
+}
+
 // Module-level translation cache, keyed by the trimmed source text. Persists for
 // the life of the page so identical strings (e.g. the same one-word feedback
 // left by many users) translate once, and so re-mounting a tab doesn't re-hit
