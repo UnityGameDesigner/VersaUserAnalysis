@@ -76,12 +76,60 @@ function tutorEvalVertexProxy(
   }
 }
 
+// Translation proxy. The browser can't call Google's gtx translate endpoint
+// directly — it sends no CORS headers, so the fetch fails with "TypeError:
+// Failed to fetch". Forward it through the dev/preview server (server-to-server
+// has no CORS) and return the upstream JSON verbatim so the client parses it
+// exactly as before. POST { text } -> the raw gtx array (or { error }).
+function translateProxy(): Plugin {
+  const handler = async (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== 'POST') {
+      res.statusCode = 405
+      res.end()
+      return
+    }
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    res.setHeader('Content-Type', 'application/json')
+    try {
+      const { text } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (!text || !String(text).trim()) {
+        res.end(JSON.stringify([[]]))
+        return
+      }
+      const url =
+        'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=' +
+        encodeURIComponent(String(text))
+      const upstream = await fetch(url)
+      if (!upstream.ok) {
+        res.statusCode = upstream.status
+        res.end(JSON.stringify({ error: `upstream ${upstream.status}` }))
+        return
+      }
+      res.end(await upstream.text())
+    } catch (e) {
+      res.statusCode = 500
+      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }))
+    }
+  }
+  return {
+    name: 'translate-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/translate', handler)
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use('/api/translate', handler)
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
     plugins: [
       react(),
+      translateProxy(),
       tutorEvalVertexProxy(
         env.GCP_PROJECT_ID || 'versa-443600',
         env.GEMINI_EVAL_MODEL || 'gemini-2.5-flash',

@@ -1,33 +1,67 @@
-// Translate arbitrary-language text to English. Uses Google's public gtx
-// endpoint because it auto-detects the source language (sl=auto) — MyMemory
-// has no auto-detect and 403s without an explicit source language, which is a
-// non-starter for transcripts that can be in any language.
+// Translate arbitrary-language text to English via the dev server's
+// /api/translate proxy (vite.config.ts), which forwards to Google's public gtx
+// endpoint server-side. gtx is used because it auto-detects the source language
+// (sl=auto) — MyMemory has no auto-detect and 403s without one, a non-starter
+// for transcripts in any language. The proxy is required because the browser
+// can't call gtx directly: it sends no CORS headers, so a direct fetch fails
+// with "TypeError: Failed to fetch". The proxy returns the raw gtx JSON verbatim.
 export async function translateText(text: string): Promise<string> {
   if (!text.trim()) return text;
   // Abort a hung request so a stalled translation can't block a caller (e.g. the
   // Feedback tab's worker pool) indefinitely — let it fail fast and retry.
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-  let res: Response;
-  try {
-    res = await fetch(
-      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(
-        text,
-      )}`,
-      { signal: controller.signal },
+  // gtx rate-limits bursts (HTTP 429). Retry a few times with exponential
+  // backoff before giving up — pairs with translateMany's concurrency cap.
+  for (let attempt = 0; ; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let res: Response;
+    try {
+      res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (res.status === 429 && attempt < 4) {
+      await new Promise((r) => setTimeout(r, 500 * 2 ** attempt + Math.random() * 300));
+      continue;
+    }
+    if (!res.ok) throw new Error(`Translation failed (${res.status})`);
+    const json = await res.json();
+    if (json && typeof json === "object" && !Array.isArray(json) && "error" in json) {
+      throw new Error(`Translation failed: ${(json as { error: string }).error}`);
+    }
+    // Shape: [[[translatedSegment, originalSegment, ...], ...], ..., detectedLang]
+    const segments = json?.[0];
+    if (!Array.isArray(segments)) return text;
+    return (
+      segments.map((seg: unknown) => (Array.isArray(seg) ? seg[0] : "")).join("") || text
     );
-  } finally {
-    clearTimeout(timeout);
   }
-  if (!res.ok) throw new Error(`Translation failed (${res.status})`);
-  const json = await res.json();
-  // Shape: [[[translatedSegment, originalSegment, ...], ...], ..., detectedLang]
-  const segments = json?.[0];
-  if (!Array.isArray(segments)) return text;
-  const translated = segments
-    .map((seg: unknown) => (Array.isArray(seg) ? seg[0] : ""))
-    .join("");
-  return translated || text;
+}
+
+// Translate many strings while capping concurrency, so a long transcript doesn't
+// fire dozens of simultaneous requests and trip gtx's 429 rate limit. Preserves
+// input order; empty strings pass through untranslated; uses translateCached so
+// identical lines (and re-runs) hit the network at most once.
+export async function translateMany(texts: string[], concurrency = 5): Promise<string[]> {
+  const results = new Array<string>(texts.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = next++;
+      if (i >= texts.length) return;
+      const t = texts[i];
+      results[i] = t.trim() ? await translateCached(t) : t;
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, texts.length || 1) }, worker),
+  );
+  return results;
 }
 
 // Module-level translation cache, keyed by the trimmed source text. Persists for

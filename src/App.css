@@ -1999,6 +1999,26 @@ body,
 .gs-skill-pct { margin-left: auto; font-weight: 700; color: #545a66; font-size: 0.82rem; }
 .gs-state { font-size: 0.66rem; font-weight: 700; padding: 0.06rem 0.45rem; border: 1px solid; border-radius: 999px; }
 
+/* Device badge (User Lookup profile header) */
+.device-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.device-badge--ios     { background: #e7f0ff; color: #1d4ed8; }
+.device-badge--android { background: #e3f6ea; color: #128a4c; }
+.device-badge--unknown { background: #eef0f3; color: #8b9099; }
+
+.transcript-translate-error {
+  margin-left: 0.6rem;
+  font-size: 0.8rem;
+  color: #b42318;
+}
+
 .user-platform-badge {
   display: inline-flex;
   padding: 0.18rem 0.6rem;

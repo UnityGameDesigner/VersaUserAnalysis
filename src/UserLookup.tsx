@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./lib/supabase";
-import { translateText } from "./lib/translate";
+import { translateMany } from "./lib/translate";
 import { parseTranscript } from "./lib/lessonMetrics";
 import { exportTranscriptsZip } from "./lib/exportTranscripts";
 import {
@@ -89,6 +89,16 @@ interface UserSkill {
   mastery_score: number | null;
   confidence_score: number | null;
   last_practiced_at: string | null;
+}
+
+// Device the user is on, from user_info.platform ('ios' / 'android'). Only ~23%
+// of users have it set; the rest read "Unknown" (there is no reliable fallback —
+// push tokens are platform-agnostic Expo tokens). Shown as a header badge.
+function deviceBadge(platform: string | null): { icon: string; label: string; variant: string } {
+  const p = (platform ?? "").toLowerCase();
+  if (p === "ios") return { icon: "🍎", label: "iOS", variant: "ios" };
+  if (p === "android") return { icon: "🤖", label: "Android", variant: "android" };
+  return { icon: "📱", label: "Unknown device", variant: "unknown" };
 }
 
 // Skill state → label + color. Progression: introduced → practiced →
@@ -604,6 +614,7 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
   const [convTranslations, setConvTranslations] = useState<string[] | null>(null);
   const [showConvTranslation, setShowConvTranslation] = useState(false);
   const [translatingConv, setTranslatingConv] = useState(false);
+  const [convTranslateError, setConvTranslateError] = useState<string | null>(null);
 
   // Copy the conversation as readable "role: text" lines rather than raw JSON.
   const copyTranscript = async () => {
@@ -624,12 +635,13 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
       return;
     }
     setTranslatingConv(true);
+    setConvTranslateError(null);
     try {
-      const results = await Promise.all(
-        messages.map((m) => (m.text.trim() ? translateText(m.text) : Promise.resolve(m.text))),
-      );
+      const results = await translateMany(messages.map((m) => m.text));
       setConvTranslations(results);
       setShowConvTranslation(true);
+    } catch (e) {
+      setConvTranslateError(e instanceof Error ? e.message : "Translation failed");
     } finally {
       setTranslatingConv(false);
     }
@@ -735,6 +747,9 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
                   ? "Show Original"
                   : "Translate Conversation"}
             </button>
+            {convTranslateError && (
+              <span className="transcript-translate-error">{convTranslateError}</span>
+            )}
           </div>
           {messages.map((m, i) => {
             const translated = showConvTranslation && convTranslations
@@ -1032,6 +1047,21 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 >
                   {user.payment_status}
                 </span>
+                {(() => {
+                  const d = deviceBadge(user.platform);
+                  return (
+                    <span
+                      className={`device-badge device-badge--${d.variant}`}
+                      title={
+                        d.variant === "unknown"
+                          ? "Device unknown — user_info.platform isn't set for this user"
+                          : `Device: ${d.label} (from user_info.platform)`
+                      }
+                    >
+                      {d.icon} {d.label}
+                    </span>
+                  );
+                })()}
                 {(() => {
                   const o = trialOutcome(user);
                   if (o === "none") return null;
