@@ -98,6 +98,8 @@ interface DayUser {
   payment_status: string | null;
   age: string | null;
   time_zone: string | null;
+  trial_started_at: string | null;
+  became_active_at: string | null;
   active_days: number;
   lessons: number;
   // Device + the demographic fields the conversion scorecard needs.
@@ -121,6 +123,35 @@ function deviceLabel(platform: string | null): { icon: string; label: string; va
   if (p === "android") return { icon: "🤖", label: "Android", variant: "android" };
   return { icon: "📱", label: "Unknown", variant: "unknown" };
 }
+
+// Whether the trial user ever CONVERTED (became a paying/active user =
+// revenue-generating), from became_active_at — NOT their current payment_status
+// snapshot. A converted-then-cancelled user still generated revenue, so they read
+// "Converted"; a trial cancelled before it ever charged reads "Not converted".
+function convertedBadge(u: DayUser): { label: string; variant: string; hint: string } {
+  if (u.became_active_at) {
+    return {
+      label: "Converted",
+      variant: "converted",
+      hint: `Became a paying user${u.payment_status ? ` (now ${u.payment_status})` : ""} — revenue-generating.`,
+    };
+  }
+  const started = u.trial_started_at ? new Date(u.trial_started_at).getTime() : NaN;
+  // Still within the 7-day trial (+ a couple days' billing grace) and not in a
+  // terminal state → the outcome isn't decided yet.
+  const stillPending =
+    Number.isFinite(started) &&
+    started > Date.now() - 9 * 86_400_000 &&
+    !/CANCEL|EXPIRE|PAST_DUE|INACTIVE|FREE/i.test(u.payment_status ?? "");
+  if (stillPending) {
+    return { label: "In trial", variant: "in-trial", hint: "Trial still in progress — may still convert." };
+  }
+  return {
+    label: "Not converted",
+    variant: "churned",
+    hint: `Trial ended without converting${u.payment_status ? ` (${u.payment_status})` : ""} — no revenue.`,
+  };
+}
 // user_info.age is TEXT with "0"/"-1" unset sentinels — show real ages only.
 function prettyAge(age: string | null): string {
   const n = parseInt((age ?? "").trim(), 10);
@@ -133,11 +164,6 @@ function prettyLang(code: string | null): string {
     .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
     .join(" ");
 }
-function statusVariant(status: string | null): string {
-  const s = (status || "").toUpperCase();
-  return s === "ACTIVE" ? "paying" : s === "TRIAL" ? "trial" : s === "PAST_DUE" ? "pastdue" : "free";
-}
-
 const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
   // timeframe); "trend" = the metric over time (cohort line); "recent" = a
@@ -268,6 +294,8 @@ const TrialRetention: React.FC = () => {
               payment_status: (r.payment_status as string) ?? null,
               age: (r.age as string) ?? null,
               time_zone: (r.time_zone as string) ?? null,
+              trial_started_at: (r.trial_started_at as string) ?? null,
+              became_active_at: (r.became_active_at as string) ?? null,
               active_days: Number(r.active_days ?? 0),
               lessons: Number(r.lessons ?? 0),
               platform: (r.platform as string) ?? null,
@@ -858,7 +886,7 @@ const TrialRetention: React.FC = () => {
                             <th>Age</th>
                             <th>Learning</th>
                             <th>Device</th>
-                            <th>Status</th>
+                            <th title="Whether the user ever converted (became_active_at) — a converted-then-cancelled user still generated revenue, unlike a trial cancelled before it charged">Converted</th>
                             <th title="Distinct days with a completed lesson, in the 7-day trial window">Active days</th>
                             <th title="Total lessons completed in the 7-day trial window (engagement)">Lessons</th>
                             <th title="Predicted trial-conversion likelihood from the signup-demographics scorecard (a lean, not a certainty)">Likely convert</th>
@@ -868,7 +896,6 @@ const TrialRetention: React.FC = () => {
                         <tbody className="table-body">
                           {dayUsers.map((u) => {
                             const href = `#user-lookup:${u.user_id}`;
-                            const st = (u.payment_status || "").toUpperCase();
                             return (
                               <tr key={u.user_id}>
                                 <td>
@@ -898,13 +925,17 @@ const TrialRetention: React.FC = () => {
                                   })()}
                                 </td>
                                 <td>
-                                  {st ? (
-                                    <span className={`plan-pill plan-pill--${statusVariant(u.payment_status)}`}>
-                                      {st === "PAST_DUE" ? "Past Due" : st.charAt(0) + st.slice(1).toLowerCase()}
-                                    </span>
-                                  ) : (
-                                    "—"
-                                  )}
+                                  {(() => {
+                                    const b = convertedBadge(u);
+                                    return (
+                                      <span
+                                        className={`user-trial-badge user-trial-badge--${b.variant}`}
+                                        title={b.hint}
+                                      >
+                                        {b.label}
+                                      </span>
+                                    );
+                                  })()}
                                 </td>
                                 <td>{u.active_days}</td>
                                 <td>{u.lessons}</td>
