@@ -152,6 +152,18 @@ function convertedBadge(u: DayUser): { label: string; variant: string; hint: str
     hint: `Trial ended without converting${u.payment_status ? ` (${u.payment_status})` : ""} — no revenue.`,
   };
 }
+
+// The actual cancellation / billing state, shown alongside the Converted badge so
+// a user who cancelled (or hit a billing issue) still surfaces that — whether or
+// not they ever converted. Only these terminal states get a tag; Active/Trial
+// add nothing beyond the Converted badge. Reuses the plan-pill styles.
+function statusTag(payment_status: string | null): { label: string; variant: string } | null {
+  const s = (payment_status ?? "").toUpperCase();
+  if (s === "CANCELED" || s === "CANCELLED") return { label: "Cancelled", variant: "free" };
+  if (s === "EXPIRED") return { label: "Expired", variant: "free" };
+  if (s === "PAST_DUE") return { label: "Billing issue", variant: "pastdue" };
+  return null;
+}
 // user_info.age is TEXT with "0"/"-1" unset sentinels — show real ages only.
 function prettyAge(age: string | null): string {
   const n = parseInt((age ?? "").trim(), 10);
@@ -927,12 +939,20 @@ const TrialRetention: React.FC = () => {
                                 <td>
                                   {(() => {
                                     const b = convertedBadge(u);
+                                    const tag = statusTag(u.payment_status);
                                     return (
-                                      <span
-                                        className={`user-trial-badge user-trial-badge--${b.variant}`}
-                                        title={b.hint}
-                                      >
-                                        {b.label}
+                                      <span style={{ display: "inline-flex", flexWrap: "wrap", gap: "0.3rem", alignItems: "center" }}>
+                                        <span
+                                          className={`user-trial-badge user-trial-badge--${b.variant}`}
+                                          title={b.hint}
+                                        >
+                                          {b.label}
+                                        </span>
+                                        {tag && (
+                                          <span className={`plan-pill plan-pill--${tag.variant}`} title={`Current status: ${u.payment_status}`}>
+                                            {tag.label}
+                                          </span>
+                                        )}
                                       </span>
                                     );
                                   })()}
