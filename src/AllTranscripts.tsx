@@ -12,6 +12,7 @@ import {
   exitFilterLabel,
 } from "./LessonBadges";
 import { exportTranscriptsZip } from "./lib/exportTranscripts";
+import { fetchInterests, prettyInterest } from "./lib/interests";
 import {
   scoreConversion,
   CONV_MODEL_AUC,
@@ -137,6 +138,7 @@ interface UserMeta {
   platform: string | null;
   trial_started_at: string | null;
   became_active_at: string | null;
+  interests?: string[]; // from user_interests (onboarding); attached after fetch
 }
 
 const USER_INFO_COLUMNS =
@@ -860,6 +862,23 @@ const TranscriptCard: React.FC<{
               </div>
             );
           })()}
+          {user.interests && user.interests.length > 0 && (
+            <div className="user-exp">
+              <div className="user-group-title">Interests ({user.interests.length})</div>
+              <div className="user-interests-row">
+                {user.interests.slice(0, 12).map((k) => (
+                  <span key={k} className="user-interest-chip">
+                    {prettyInterest(k)}
+                  </span>
+                ))}
+                {user.interests.length > 12 && (
+                  <span className="user-interest-chip user-interest-chip--more">
+                    +{user.interests.length - 12} more
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="user-panel">
@@ -1051,12 +1070,13 @@ const AllTranscripts: React.FC = () => {
           .select(USER_INFO_COLUMNS)
           .in("user_id", newUserIds);
         if (!uErr && users) {
+          const interestMap = await fetchInterests(newUserIds);
           setUserMeta((prev) => {
             const next = new Map(prev);
             (users as unknown as (UserMeta & { user_id: string })[]).forEach((u) => {
               if (!next.has(u.user_id)) {
                 const { user_id, ...meta } = u;
-                next.set(user_id, meta);
+                next.set(user_id, { ...meta, interests: interestMap.get(user_id) ?? [] });
               }
             });
             return next;

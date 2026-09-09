@@ -2070,6 +2070,27 @@ body,
   padding: 0.2rem 0.75rem;
 }
 
+/* Interest chips (onboarding interests) — User Lookup + All Transcripts */
+.user-interests-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.user-interest-chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.16rem 0.55rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  border: 1px solid #e0e4f7;
+}
+.user-interest-chip--more {
+  background: #f3f4f6;
+  color: #6b7280;
+  border-color: #e5e7eb;
+}
+
 .user-platform-badge {
   display: inline-flex;
   padding: 0.18rem 0.6rem;

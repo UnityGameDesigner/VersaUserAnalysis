@@ -24,6 +24,7 @@ import SpeakingProgress from "./SpeakingProgress";
 import { LessonBadges } from "./LessonBadges";
 import { trialOutcome, TRIAL_OUTCOME_META } from "./lib/trialOutcome";
 import { scoreConversion, CONV_TIER_META } from "./lib/conversionScore";
+import { fetchInterests, prettyInterest } from "./lib/interests";
 import { analyzeCancellation, reasonMeta, type CancelAnalysis } from "./lib/analyzeCancellation";
 import { getCancelAnalysis, saveCancelAnalysis } from "./lib/cancelAnalysisStore";
 import { format } from "date-fns";
@@ -858,6 +859,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [goals, setGoals] = useState<UserGoal[]>([]);
   const [skills, setSkills] = useState<UserSkill[]>([]);
+  const [interests, setInterests] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
@@ -881,6 +883,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
     setNotifications([]);
     setGoals([]);
     setSkills([]);
+    setInterests([]);
     setSearched(true);
 
     try {
@@ -903,12 +906,14 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
 
       // Goal progress + skill development (non-fatal — panel is hidden if empty
       // or if these fail). Names are resolved server-side by the RPCs.
-      const [{ data: goalData }, { data: skillData }] = await Promise.all([
+      const [{ data: goalData }, { data: skillData }, interestMap] = await Promise.all([
         supabase.rpc("get_user_goals", { p_user_id: trimmed }),
         supabase.rpc("get_user_skills", { p_user_id: trimmed }),
+        fetchInterests([trimmed]),
       ]);
       setGoals((goalData as UserGoal[]) ?? []);
       setSkills((skillData as UserSkill[]) ?? []);
+      setInterests(interestMap.get(trimmed) ?? []);
 
       // Fetch all completed lessons for this user (paginated)
       let allLessons: CompletedLesson[] = [];
@@ -1307,6 +1312,20 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
 
             {/* Goal progress + skill development */}
             <GoalsSkillsPanel goals={goals} skills={skills} />
+
+            {/* Interests (onboarding) */}
+            {interests.length > 0 && (
+              <div className="lookup-lessons">
+                <h3 className="lookup-lessons-title">Interests ({interests.length})</h3>
+                <div className="user-interests-row">
+                  {interests.map((k) => (
+                    <span key={k} className="user-interest-chip">
+                      {prettyInterest(k)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Notifications sent to this user */}
             <NotificationsPanel notifications={notifications} />
