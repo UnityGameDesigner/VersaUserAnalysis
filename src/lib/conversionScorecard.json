@@ -1,30 +1,30 @@
 {
-  "model": "logreg-demographics-v2",
-  "cv_auc": 0.727,
+  "model": "logreg-demographics-v3",
+  "cv_auc": 0.742,
   "base_rate": 0.117,
   "base_rate_all": 0.179,
   "trained_rows": 2197,
   "trained_at": "2026-09-09",
-  "intercept": 0.03309360210396366,
+  "intercept": 0.036688491467190866,
   "numeric": [
     {
       "name": "age",
       "median": 31.0,
       "mean": 31.632225762403277,
       "scale": 10.484417169090612,
-      "coef": 0.46928789982268654
+      "coef": 0.3750065529373168
     }
   ],
   "categorical": [
     {
       "name": "gender",
       "coefs": {
-        "Female": -0.25192107989529905,
-        "Male": -0.1393937793836248,
-        "Other": -0.13579406735460892,
-        "Prefer not to say": -0.7416180188146186
+        "Female": -0.22078946718145726,
+        "Male": -0.07563404042247267,
+        "Other": -0.0055326918331780415,
+        "Prefer not to say": -0.7372518362589865
       },
-      "infrequent_coef": 1.3449340081970487,
+      "infrequent_coef": 1.1143539360041654,
       "infrequent_values": [
         "NA"
       ]
@@ -32,14 +32,14 @@
     {
       "name": "native_language",
       "coefs": {
-        "ar": -0.5598144408391795,
-        "en": 0.7219043311841066,
-        "id": -0.07630318759648835,
-        "th": -0.3622114695407275,
-        "tl": 0.7709579206604534,
-        "vi": -0.23731767147446226
+        "ar": -0.32312253331723934,
+        "en": 0.7753278597911397,
+        "id": -0.15418610157219764,
+        "th": -0.4145725704073793,
+        "tl": 0.8109951758860403,
+        "vi": -0.13311215309619245
       },
-      "infrequent_coef": -0.18100841964481532,
+      "infrequent_coef": -0.4861837769761289,
       "infrequent_values": [
         "de",
         "es",
@@ -81,9 +81,9 @@
     {
       "name": "learning_language",
       "coefs": {
-        "english": -0.0795650831797158
+        "english": -0.021200254721216987
       },
-      "infrequent_coef": 0.15577214592859207,
+      "infrequent_coef": 0.09634615502925835,
       "infrequent_values": [
         "chinese",
         "french",
@@ -96,15 +96,15 @@
     {
       "name": "level",
       "coefs": {
-        "A1 - Beginner": 0.17562810191908315,
-        "A2 - Early Intermediate": 0.06365820519042954,
-        "B1 - Intermediate": 0.36010024682264014,
-        "B2 - Experienced": 0.4697466275007616,
-        "B2+ - Experienced": -0.08826525928180977,
-        "beginner": -0.6031367766821587,
-        "intermediate": -0.23279500362488245
+        "A1 - Beginner": 0.23861740178613516,
+        "A2 - Early Intermediate": 0.09826048146258001,
+        "B1 - Intermediate": 0.36914810458340175,
+        "B2 - Experienced": 0.4640629793785786,
+        "B2+ - Experienced": -0.09143535329878529,
+        "beginner": -0.617813143027451,
+        "intermediate": -0.1956507735842717
       },
-      "infrequent_coef": -0.06872907909516765,
+      "infrequent_coef": -0.1900437969921241,
       "infrequent_values": [
         "A1 - Nagsisimula",
         "Beginner",
@@ -116,13 +116,13 @@
     {
       "name": "reason",
       "coefs": {
-        "Career opportunities": 0.10005944404272592,
-        "Career opportunities,Traveling,Living abroad,School,Personal interest": 0.09023340730983194,
-        "Career opportunities,Traveling,Living abroad,School,Personal interest,Other": 0.1921676872544092,
-        "Not specified": -0.661895177818518,
-        "Personal interest": 0.1075919882971124
+        "Career opportunities": 0.22395627349029823,
+        "Career opportunities,Traveling,Living abroad,School,Personal interest": 0.05817731499925775,
+        "Career opportunities,Traveling,Living abroad,School,Personal interest,Other": 0.09103747700175761,
+        "Not specified": -0.6633359710564373,
+        "Personal interest": 0.18056980055541128
       },
-      "infrequent_coef": 0.24804971366333342,
+      "infrequent_coef": 0.18474100531777418,
       "infrequent_values": [
         "Career opportunities,Living abroad",
         "Career opportunities,Living abroad,Other",
@@ -278,11 +278,11 @@
     {
       "name": "demand_tier",
       "coefs": {
-        "NA": -1.114569802144878,
-        "bronze": 0.26313101573478875,
-        "gold": 0.6855398894640712,
-        "platinum": -0.06623350482180065,
-        "silver": 0.30833946451671695
+        "NA": -1.0767414962328752,
+        "bronze": 0.3165946878370647,
+        "gold": 0.7040433250793587,
+        "platinum": -0.14441471626382782,
+        "silver": 0.27566409988835283
       },
       "infrequent_coef": 0.0,
       "infrequent_values": []
@@ -290,9 +290,9 @@
     {
       "name": "platform",
       "coefs": {
-        "NA": -0.5575284677140769,
-        "android": 0.6235703048069519,
-        "ios": 0.010165225656008019
+        "NA": -0.5299697242291599,
+        "android": 0.6253914911007132,
+        "ios": -0.020275866563504427
       },
       "infrequent_coef": 0.0,
       "infrequent_values": []
@@ -300,11 +300,11 @@
     {
       "name": "messaging_platform",
       "coefs": {
-        "NA": 0.3849083933292731,
-        "messenger": -0.4014304023252701,
-        "whatsapp": -0.1691752223732188
+        "NA": 0.287480602149382,
+        "messenger": -0.29814916836331273,
+        "whatsapp": -0.20427169528770545
       },
-      "infrequent_coef": 0.26190429411809685,
+      "infrequent_coef": 0.29008616180967556,
       "infrequent_values": [
         "line",
         "sms",
@@ -316,15 +316,15 @@
     {
       "name": "tutor",
       "coefs": {
-        "Adam": -0.4325533566613603,
-        "Alex": -0.4711227945599142,
-        "Connor": 0.38409357764789354,
-        "Jennie": 0.420058019868929,
-        "Justin": 0.09301592791113163,
-        "Katy": -0.3280546245683184,
-        "Riley": 0.12074339682593531
+        "Adam": -0.4594989389712272,
+        "Alex": -0.4750115539558461,
+        "Connor": 0.4046917914484857,
+        "Jennie": 0.421522363010848,
+        "Justin": 0.03367202742738154,
+        "Katy": -0.17959289996065622,
+        "Riley": 0.143206013707396
       },
-      "infrequent_coef": 0.2900269162845869,
+      "infrequent_coef": 0.18615709760166566,
       "infrequent_values": [
         "Alexa",
         "Jake",
@@ -337,9 +337,9 @@
     {
       "name": "completed_tutorial",
       "coefs": {
-        "true": -0.49225902037572034
+        "true": -0.6006668709641648
       },
-      "infrequent_coef": 0.5684660831245948,
+      "infrequent_coef": 0.6758127712721973,
       "infrequent_values": [
         "false"
       ]
@@ -347,9 +347,9 @@
     {
       "name": "previous_experience",
       "coefs": {
-        "NA": 0.0036621218617099854
+        "NA": -0.02184101854995733
       },
-      "infrequent_coef": 0.0725449408871684,
+      "infrequent_coef": 0.09698691885799804,
       "infrequent_values": [
         "frequency:daily,context:media,history:onOff,goal:career",
         "frequency:daily,context:work,history:regularly,goal:career",
@@ -380,27 +380,132 @@
     {
       "name": "attribution",
       "coefs": {
-        "NA": -0.48019241946281793,
-        "facebook": 0.2555419129939292,
-        "instagram": 0.04838083958489697,
-        "other": -0.1893592837395366,
-        "referral": 0.12762301175719032,
-        "tiktok": -0.18529600037707553,
-        "youtube": -0.0608333761632561
+        "NA": -0.39148519579356167,
+        "facebook": 0.27698712471418135,
+        "instagram": 0.015394487790110193,
+        "other": -0.2730015882845512,
+        "referral": 0.13917097797185418,
+        "tiktok": -0.08947788968587679,
+        "youtube": -0.12310462114587649
       },
-      "infrequent_coef": 0.560342378155548,
+      "infrequent_coef": 0.5206626047417815,
       "infrequent_values": [
         "google"
+      ]
+    },
+    {
+      "name": "time_zone",
+      "coefs": {
+        "Africa/Cairo": -1.2608201421595626,
+        "America/Los_Angeles": 0.9376778060783632,
+        "America/New_York": 0.702492298458371,
+        "America/Toronto": 0.0683785063094811,
+        "Asia/Bangkok": 0.08298920671280749,
+        "Asia/Dubai": -0.5096414152246173,
+        "Asia/Ho_Chi_Minh": -0.45187686104722324,
+        "Asia/Jakarta": 0.11329006831302653,
+        "Asia/Makassar": -0.44086508270492214,
+        "Asia/Manila": -0.21261046219068025,
+        "Asia/Riyadh": -0.19576131094103147,
+        "Asia/Tokyo": -0.43042954668055966,
+        "Europe/London": -0.18489169273093317,
+        "Pacific/Auckland": 1.166295101739587
+      },
+      "infrequent_coef": 0.6909194263759629,
+      "infrequent_values": [
+        "Africa/Accra",
+        "Africa/Brazzaville",
+        "Africa/Conakry",
+        "Africa/Dar_es_Salaam",
+        "Africa/Johannesburg",
+        "Africa/Libreville",
+        "Africa/Lusaka",
+        "Africa/Tripoli",
+        "Africa/Tunis",
+        "America/Anchorage",
+        "America/Cayman",
+        "America/Chicago",
+        "America/Denver",
+        "America/Detroit",
+        "America/Edmonton",
+        "America/Grand_Turk",
+        "America/Grenada",
+        "America/Guatemala",
+        "America/Halifax",
+        "America/Moncton",
+        "America/Phoenix",
+        "America/Regina",
+        "America/Sao_Paulo",
+        "America/St_Johns",
+        "America/St_Thomas",
+        "America/Vancouver",
+        "America/Winnipeg",
+        "Asia/Almaty",
+        "Asia/Amman",
+        "Asia/Baghdad",
+        "Asia/Bahrain",
+        "Asia/Colombo",
+        "Asia/Dili",
+        "Asia/Hebron",
+        "Asia/Hong_Kong",
+        "Asia/Jayapura",
+        "Asia/Jerusalem",
+        "Asia/Kolkata",
+        "Asia/Kuala_Lumpur",
+        "Asia/Kuching",
+        "Asia/Kuwait",
+        "Asia/Macau",
+        "Asia/Muscat",
+        "Asia/Phnom_Penh",
+        "Asia/Pontianak",
+        "Asia/Qatar",
+        "Asia/Saigon",
+        "Asia/Seoul",
+        "Asia/Shanghai",
+        "Asia/Singapore",
+        "Asia/Taipei",
+        "Asia/Vientiane",
+        "Asia/Yangon",
+        "Atlantic/Canary",
+        "Atlantic/Stanley",
+        "Australia/Adelaide",
+        "Australia/Brisbane",
+        "Australia/Darwin",
+        "Australia/Hobart",
+        "Australia/Melbourne",
+        "Australia/Perth",
+        "Australia/Sydney",
+        "Etc/GMT-3",
+        "Europe/Belgrade",
+        "Europe/Berlin",
+        "Europe/Bucharest",
+        "Europe/Dublin",
+        "Europe/Istanbul",
+        "Europe/Madrid",
+        "Europe/Moscow",
+        "Europe/Oslo",
+        "Europe/Paris",
+        "Europe/Prague",
+        "Europe/Rome",
+        "Europe/Skopje",
+        "Europe/Warsaw",
+        "Europe/Zagreb",
+        "Europe/Zurich",
+        "GMT",
+        "Indian/Maldives",
+        "Pacific/Guam",
+        "Pacific/Honolulu",
+        "US/Eastern"
       ]
     }
   ],
   "tiers": {
-    "high": 0.2636,
-    "medium": 0.1298
+    "high": 0.2637,
+    "medium": 0.1198
   },
   "tier_conv_recent": {
-    "high": 0.312,
-    "medium": 0.135,
-    "low": 0.078
+    "high": 0.37,
+    "medium": 0.154,
+    "low": 0.06
   }
 }

@@ -4,13 +4,13 @@
 // fit offline on resolved trials (label = became_active_at set) and exported to
 // conversionScorecard.json; scoring here reproduces that model exactly.
 //
-// Honest framing: CV ROC-AUC ≈ 0.73 — a useful RANKING, not a per-user
+// Honest framing: CV ROC-AUC ≈ 0.74 — a useful RANKING, not a per-user
 // certainty. Retrained 2026-09-09 on 2,197 resolved trials; tier rates are
 // calibrated to the RECENT regime (last 120d, ~12% base, since conversion has
-// declined): High tier ≈ 31% convert (2.7x base), Medium ≈ 14%, Low ≈ 8%.
-// Features are signup-time only (age, onboarding reason, demand_tier, language,
-// tutor, platform, …), so it is usable from day 0 of a trial. See scripts in
-// scratchpad (retrain_scorecard.py) / memory "conversion-signal-findings".
+// declined): High tier ≈ 37% convert (~3x base), Medium ≈ 15%, Low ≈ 6%.
+// Features are signup-time only (demand_tier, age, onboarding reason,
+// native_language, time_zone, level, …), so it is usable from day 0 of a trial.
+// See scripts in scratchpad (retrain_v3.py) / memory "conversion-signal-findings".
 
 import scorecard from "./conversionScorecard.json";
 
@@ -42,7 +42,7 @@ export const CONV_MODEL_AUC = CARD.cv_auc;
 
 // Shared tier metadata (labels/variants/hints) for the likelihood pill + filter,
 // used by both All Transcripts and User Lookup. Recent-regime rates (last 120d,
-// ~12% base): High ≈ 31% convert, Medium ≈ 14%, Low ≈ 8% — a model lean, not a
+// ~12% base): High ≈ 37% convert, Medium ≈ 15%, Low ≈ 6% — a model lean, not a
 // certainty.
 export const CONV_TIER_META: Record<
   ConvTier,
@@ -51,17 +51,17 @@ export const CONV_TIER_META: Record<
   high: {
     label: "High",
     variant: "high",
-    hint: `Predicted trial-conversion likelihood: HIGH (top ~20%, recently ~31% convert vs ~12% base — 2.7x). Signup-demographics model, AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
+    hint: `Predicted trial-conversion likelihood: HIGH (top ~20%, recently ~37% convert vs ~12% base — ~3x). Signup-demographics model, AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
   },
   medium: {
     label: "Medium",
     variant: "medium",
-    hint: `Predicted trial-conversion likelihood: MEDIUM (recently ~14% convert). Model AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
+    hint: `Predicted trial-conversion likelihood: MEDIUM (recently ~15% convert). Model AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
   },
   low: {
     label: "Low",
     variant: "low",
-    hint: `Predicted trial-conversion likelihood: LOW (bottom ~50%, recently ~8% convert). Model AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
+    hint: `Predicted trial-conversion likelihood: LOW (bottom ~50%, recently ~6% convert). Model AUC ≈ ${CARD.cv_auc} — a lean, not a certainty.`,
   },
 };
 
