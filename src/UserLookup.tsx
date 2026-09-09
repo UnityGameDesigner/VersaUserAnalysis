@@ -410,6 +410,56 @@ const TrialCancellationRow: React.FC<{ user: UserInfo; lessons: CompletedLesson[
   );
 };
 
+// When a trial *should* have converted (start + 7-day trial) and whether it did.
+// Because Android doesn't send billing events, conversion is undercounted: a
+// trial with lessons AFTER the window had paid access, so it converted even if
+// became_active_at was never recorded — surfaced here as "Converted (inferred)".
+const ExpectedConversionRow: React.FC<{ user: UserInfo; lessons: CompletedLesson[] }> = ({
+  user,
+  lessons,
+}) => {
+  if (!user.trial_started_at) return null;
+  const start = new Date(user.trial_started_at).getTime();
+  if (!Number.isFinite(start)) return null;
+  const expected = start + 7 * 86_400_000; // charge day
+  const postTrial = lessons.filter(
+    (l) => new Date(l.created_at).getTime() > start + 8 * 86_400_000,
+  ).length;
+  const tracked = !!user.became_active_at;
+
+  let badge: string, variant: string, detail: string;
+  if (tracked) {
+    badge = "Converted";
+    variant = "converted";
+    detail = `conversion recorded ${format(new Date(user.became_active_at as string), "MMM d, yyyy")}`;
+  } else if (postTrial > 0) {
+    badge = "Converted (inferred)";
+    variant = "converted";
+    detail = `${postTrial} lesson${postTrial === 1 ? "" : "s"} completed after the trial ended — had paid access, but no conversion event was recorded (Android doesn't send billing events)`;
+  } else if (expected > Date.now()) {
+    badge = "Pending";
+    variant = "in-trial";
+    detail = "trial hasn't reached its charge day yet";
+  } else {
+    badge = "Not converted";
+    variant = "churned";
+    detail = "no conversion event and no activity after the trial ended";
+  }
+
+  return (
+    <div className="expected-conv-banner">
+      <div className="expected-conv-head">
+        <span className="expected-conv-title">Expected conversion</span>
+        <span className="expected-conv-when">
+          {format(new Date(expected), "MMM d, yyyy")} · day 7
+        </span>
+        <span className={`user-trial-badge user-trial-badge--${variant}`}>{badge}</span>
+      </div>
+      <div className="expected-conv-detail">{detail}</div>
+    </div>
+  );
+};
+
 // LLM-inferred "why they likely cancelled" from the user's call logs + signals.
 const CancellationCard: React.FC<{
   user: UserInfo;
@@ -1208,6 +1258,9 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 </div>
               )}
             </div>
+
+            {/* When the trial should have converted + inferred outcome */}
+            <ExpectedConversionRow user={user} lessons={lessons} />
 
             {/* When they cancelled their trial, relative to their lessons */}
             <TrialCancellationRow user={user} lessons={lessons} />

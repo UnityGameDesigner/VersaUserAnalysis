@@ -21,6 +21,7 @@ returns table(
   became_active_at timestamptz,
   active_days int,
   lessons int,
+  post_trial_lessons int,
   platform text,
   gender text,
   native_language text,
@@ -44,6 +45,12 @@ language sql stable as $$
       where cl.created_at >= u.trial_started_at
         and cl.created_at < u.trial_started_at + interval '7 days'
     )::int as lessons,
+    -- lessons after the 7-day trial ended: proof of paid access, so a trial with
+    -- post_trial_lessens > 0 but no became_active_at converted-but-untracked
+    -- (common on Android, which doesn't send billing events).
+    count(cl.*) filter (
+      where cl.created_at > u.trial_started_at + interval '8 days'
+    )::int as post_trial_lessons,
     u.platform, u.gender, u.native_language, u.level, u.reason, u.demand_tier,
     u.messaging_platform, u.tutor, u.completed_tutorial, u.previous_experience, u.attribution
   from user_info u

@@ -102,6 +102,7 @@ interface DayUser {
   became_active_at: string | null;
   active_days: number;
   lessons: number;
+  post_trial_lessons: number; // lessons after day 8 = proof of paid access
   // Device + the demographic fields the conversion scorecard needs.
   platform: string | null;
   gender: string | null;
@@ -134,6 +135,16 @@ function convertedBadge(u: DayUser): { label: string; variant: string; hint: str
       label: "Converted",
       variant: "converted",
       hint: `Became a paying user${u.payment_status ? ` (now ${u.payment_status})` : ""} — revenue-generating.`,
+    };
+  }
+  // No conversion event, but they completed lessons after the 7-day trial ended —
+  // they had paid access, so they converted-but-untracked (common on Android,
+  // which doesn't send billing events). Manually inferred.
+  if (u.post_trial_lessons > 0) {
+    return {
+      label: "Converted*",
+      variant: "converted",
+      hint: `Inferred: no conversion event was recorded, but ${u.post_trial_lessons} lesson${u.post_trial_lessons === 1 ? "" : "s"} were completed after the trial ended (paid access). Android doesn't send billing events, so its conversions are undercounted.`,
     };
   }
   const started = u.trial_started_at ? new Date(u.trial_started_at).getTime() : NaN;
@@ -332,6 +343,7 @@ const TrialRetention: React.FC = () => {
               became_active_at: (r.became_active_at as string) ?? null,
               active_days: Number(r.active_days ?? 0),
               lessons: Number(r.lessons ?? 0),
+              post_trial_lessons: Number(r.post_trial_lessons ?? 0),
               platform: (r.platform as string) ?? null,
               gender: (r.gender as string) ?? null,
               native_language: (r.native_language as string) ?? null,
