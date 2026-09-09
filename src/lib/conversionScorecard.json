@@ -1,42 +1,45 @@
 {
-  "model": "logreg-demographics-v1",
-  "cv_auc": 0.735,
-  "base_rate": 0.181,
-  "intercept": -0.09483064175541756,
+  "model": "logreg-demographics-v2",
+  "cv_auc": 0.727,
+  "base_rate": 0.117,
+  "base_rate_all": 0.179,
+  "trained_rows": 2197,
+  "trained_at": "2026-09-09",
+  "intercept": 0.03309360210396366,
   "numeric": [
     {
       "name": "age",
-      "median": 31.5,
-      "mean": 31.861348528015196,
-      "scale": 10.398140534563568,
-      "coef": 0.4684838553060824
+      "median": 31.0,
+      "mean": 31.632225762403277,
+      "scale": 10.484417169090612,
+      "coef": 0.46928789982268654
     }
   ],
   "categorical": [
     {
       "name": "gender",
       "coefs": {
-        "Female": -0.03169068273902005,
-        "Male": 0.10855387930119295,
-        "Prefer not to say": -0.5748279150270833
+        "Female": -0.25192107989529905,
+        "Male": -0.1393937793836248,
+        "Other": -0.13579406735460892,
+        "Prefer not to say": -0.7416180188146186
       },
-      "infrequent_coef": 0.5019745950909213,
+      "infrequent_coef": 1.3449340081970487,
       "infrequent_values": [
-        "NA",
-        "Other"
+        "NA"
       ]
     },
     {
       "name": "native_language",
       "coefs": {
-        "ar": -0.7828846236887274,
-        "en": 0.7542224507817977,
-        "id": 0.0870015942395387,
-        "th": -0.4221079691214765,
-        "tl": 0.7950344241138124,
-        "vi": -0.21684954427002964
+        "ar": -0.5598144408391795,
+        "en": 0.7219043311841066,
+        "id": -0.07630318759648835,
+        "th": -0.3622114695407275,
+        "tl": 0.7709579206604534,
+        "vi": -0.23731767147446226
       },
-      "infrequent_coef": -0.21040645542890205,
+      "infrequent_coef": -0.18100841964481532,
       "infrequent_values": [
         "de",
         "es",
@@ -50,10 +53,12 @@
         "other:English",
         "other:Filipino",
         "other:Ghana",
+        "other:Hrvatski",
         "other:IsiZulu",
         "other:Kurdish",
         "other:LanguageGhanaian",
         "other:Myanmar",
+        "other:Norwegian",
         "other:Philippines",
         "other:Pilipino",
         "other:Romania",
@@ -68,34 +73,38 @@
         "other:tagalog",
         "pt-BR",
         "ru",
-        "tr"
+        "tr",
+        "uk",
+        "zh"
       ]
     },
     {
       "name": "learning_language",
       "coefs": {
-        "english": -0.1455708969667397
+        "english": -0.0795650831797158
       },
-      "infrequent_coef": 0.1495807735927433,
+      "infrequent_coef": 0.15577214592859207,
       "infrequent_values": [
         "chinese",
         "french",
         "japanese",
-        "korean"
+        "korean",
+        "spanish",
+        "tagalog"
       ]
     },
     {
       "name": "level",
       "coefs": {
-        "A1 - Beginner": 0.12824001054572642,
-        "A2 - Early Intermediate": 0.003854127708586577,
-        "B1 - Intermediate": 0.3079812097472957,
-        "B2 - Experienced": 0.44676336577171155,
-        "B2+ - Experienced": -0.1581663089084034,
-        "beginner": -0.47585182393924846,
-        "intermediate": -0.1825615229195037
+        "A1 - Beginner": 0.17562810191908315,
+        "A2 - Early Intermediate": 0.06365820519042954,
+        "B1 - Intermediate": 0.36010024682264014,
+        "B2 - Experienced": 0.4697466275007616,
+        "B2+ - Experienced": -0.08826525928180977,
+        "beginner": -0.6031367766821587,
+        "intermediate": -0.23279500362488245
       },
-      "infrequent_coef": -0.06624918138014987,
+      "infrequent_coef": -0.06872907909516765,
       "infrequent_values": [
         "A1 - Nagsisimula",
         "Beginner",
@@ -107,13 +116,13 @@
     {
       "name": "reason",
       "coefs": {
-        "Career opportunities": 0.09544610610304637,
-        "Career opportunities,Traveling,Living abroad,School,Personal interest": 0.07239453330549564,
-        "Career opportunities,Traveling,Living abroad,School,Personal interest,Other": 0.2006371066536336,
-        "Not specified": -0.6736458289154718,
-        "Personal interest": 0.0909832383838355
+        "Career opportunities": 0.10005944404272592,
+        "Career opportunities,Traveling,Living abroad,School,Personal interest": 0.09023340730983194,
+        "Career opportunities,Traveling,Living abroad,School,Personal interest,Other": 0.1921676872544092,
+        "Not specified": -0.661895177818518,
+        "Personal interest": 0.1075919882971124
       },
-      "infrequent_coef": 0.2181947210954711,
+      "infrequent_coef": 0.24804971366333342,
       "infrequent_values": [
         "Career opportunities,Living abroad",
         "Career opportunities,Living abroad,Other",
@@ -269,11 +278,11 @@
     {
       "name": "demand_tier",
       "coefs": {
-        "NA": -1.1903261534165095,
-        "bronze": 0.15802002946464386,
-        "gold": 0.8349902693989032,
-        "platinum": -0.14915107424131524,
-        "silver": 0.35047680542029247
+        "NA": -1.114569802144878,
+        "bronze": 0.26313101573478875,
+        "gold": 0.6855398894640712,
+        "platinum": -0.06623350482180065,
+        "silver": 0.30833946451671695
       },
       "infrequent_coef": 0.0,
       "infrequent_values": []
@@ -281,9 +290,9 @@
     {
       "name": "platform",
       "coefs": {
-        "NA": -0.3051016834272124,
-        "android": 0.45604003096808216,
-        "ios": -0.14692847091485994
+        "NA": -0.5575284677140769,
+        "android": 0.6235703048069519,
+        "ios": 0.010165225656008019
       },
       "infrequent_coef": 0.0,
       "infrequent_values": []
@@ -291,13 +300,13 @@
     {
       "name": "messaging_platform",
       "coefs": {
-        "NA": 0.4002175227433011,
-        "whatsapp": -0.31151356431245647
+        "NA": 0.3849083933292731,
+        "messenger": -0.4014304023252701,
+        "whatsapp": -0.1691752223732188
       },
-      "infrequent_coef": -0.08469408180485229,
+      "infrequent_coef": 0.26190429411809685,
       "infrequent_values": [
         "line",
-        "messenger",
         "sms",
         "telegram",
         "viber",
@@ -307,19 +316,20 @@
     {
       "name": "tutor",
       "coefs": {
-        "Adam": -0.40115545828130283,
-        "Alex": -0.40945537543618127,
-        "Connor": 0.4665792089514684,
-        "Jennie": 0.4980710763351744,
-        "Justin": 0.15843775386868672,
-        "Katy": -0.23172219094501043
+        "Adam": -0.4325533566613603,
+        "Alex": -0.4711227945599142,
+        "Connor": 0.38409357764789354,
+        "Jennie": 0.420058019868929,
+        "Justin": 0.09301592791113163,
+        "Katy": -0.3280546245683184,
+        "Riley": 0.12074339682593531
       },
-      "infrequent_coef": -0.07674513786682376,
+      "infrequent_coef": 0.2900269162845869,
       "infrequent_values": [
         "Alexa",
+        "Jake",
         "Omar",
         "Rex",
-        "Riley",
         "Rion",
         "Sarah"
       ]
@@ -327,9 +337,9 @@
     {
       "name": "completed_tutorial",
       "coefs": {
-        "true": -0.5637476585008057
+        "true": -0.49225902037572034
       },
-      "infrequent_coef": 0.5677575351268026,
+      "infrequent_coef": 0.5684660831245948,
       "infrequent_values": [
         "false"
       ]
@@ -337,9 +347,9 @@
     {
       "name": "previous_experience",
       "coefs": {
-        "NA": -0.1256806975664821
+        "NA": 0.0036621218617099854
       },
-      "infrequent_coef": 0.129690574192484,
+      "infrequent_coef": 0.0725449408871684,
       "infrequent_values": [
         "frequency:daily,context:media,history:onOff,goal:career",
         "frequency:daily,context:work,history:regularly,goal:career",
@@ -348,6 +358,7 @@
         "frequency:monthly,context:work,history:never,goal:career",
         "frequency:never,context:none,history:longAgo,goal:travel",
         "frequency:never,context:none,history:never,goal:travel",
+        "frequency:weekly,context:media,history:never,goal:career",
         "frequency:weekly,context:media,history:onOff,goal:dailyLife",
         "frequency:weekly,context:media,history:regularly,goal:career",
         "frequency:weekly,context:none,history:onOff,goal:career",
@@ -360,6 +371,8 @@
         "goal:school,ability:words,speakingPartners:nobody,learningStyle:other,commitment:serious",
         "goal:school,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:exploring",
         "goal:travel,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:exploring",
+        "goal:work,ability:none,speakingPartners:nobody,learningStyle:speaking,commitment:exploring",
+        "goal:work,ability:words,speakingPartners:friends,learningStyle:grammar,commitment:regular",
         "goal:work,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:exploring",
         "goal:work,ability:words,speakingPartners:nobody,learningStyle:speaking,commitment:regular"
       ]
@@ -367,22 +380,27 @@
     {
       "name": "attribution",
       "coefs": {
-        "NA": -0.2582254897730797,
-        "facebook": 0.20823967363248597,
-        "instagram": 0.005345196935037976,
-        "other": -0.23749031184993638,
-        "referral": 0.10731887213924866,
-        "tiktok": -0.22731088500647004,
-        "youtube": -0.1311684938580829
+        "NA": -0.48019241946281793,
+        "facebook": 0.2555419129939292,
+        "instagram": 0.04838083958489697,
+        "other": -0.1893592837395366,
+        "referral": 0.12762301175719032,
+        "tiktok": -0.18529600037707553,
+        "youtube": -0.0608333761632561
       },
-      "infrequent_coef": 0.5373013144068257,
+      "infrequent_coef": 0.560342378155548,
       "infrequent_values": [
         "google"
       ]
     }
   ],
   "tiers": {
-    "high": 0.2693,
-    "medium": 0.1305
+    "high": 0.2636,
+    "medium": 0.1298
+  },
+  "tier_conv_recent": {
+    "high": 0.312,
+    "medium": 0.135,
+    "low": 0.078
   }
 }
