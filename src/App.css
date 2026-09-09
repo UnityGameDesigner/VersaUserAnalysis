@@ -2046,6 +2046,30 @@ body,
 }
 .trial-cancel-facts strong { color: #7f1d1d; }
 
+/* Cancellation divider inside the completed-lessons list */
+.lesson-cancel-marker {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.15rem 0;
+}
+.lesson-cancel-marker::before,
+.lesson-cancel-marker::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dashed #e6a9a4;
+}
+.lesson-cancel-marker-label {
+  white-space: nowrap;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #b91c1c;
+  background: #fdf3f2;
+  border: 1px solid #f3d0cd;
+  border-radius: 999px;
+  padding: 0.2rem 0.75rem;
+}
+
 .user-platform-badge {
   display: inline-flex;
   padding: 0.18rem 0.6rem;

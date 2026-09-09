@@ -1336,9 +1336,35 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 </div>
               ) : (
                 <div className="lessons-cards">
-                  {lessons.map((c) => (
-                    <LessonCard key={c.id} lesson={c} user={user} />
-                  ))}
+                  {(() => {
+                    // Insert a divider at the cancellation point so you can see
+                    // where it fell in the (newest-first) lesson timeline: lessons
+                    // above it happened after the cancel, below it before.
+                    const canceledAt = user.canceled_at ? new Date(user.canceled_at).getTime() : null;
+                    const marker =
+                      canceledAt != null && Number.isFinite(canceledAt) ? (
+                        <div className="lesson-cancel-marker" key="cancel-marker">
+                          <span className="lesson-cancel-marker-label">
+                            🚫{" "}
+                            {(user.canceled_from ?? "").toUpperCase() === "TRIAL"
+                              ? "Cancelled trial"
+                              : "Cancelled"}{" "}
+                            · {format(new Date(canceledAt), "MMM d, yyyy · h:mm a")}
+                          </span>
+                        </div>
+                      ) : null;
+                    const items: React.ReactNode[] = [];
+                    let placed = marker == null;
+                    lessons.forEach((c) => {
+                      if (!placed && new Date(c.created_at).getTime() <= (canceledAt as number)) {
+                        items.push(marker);
+                        placed = true;
+                      }
+                      items.push(<LessonCard key={c.id} lesson={c} user={user} />);
+                    });
+                    if (!placed && marker) items.push(marker);
+                    return items;
+                  })()}
                 </div>
               )}
             </div>
