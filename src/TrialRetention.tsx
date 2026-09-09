@@ -149,11 +149,12 @@ function convertedBadge(u: DayUser): { label: string; variant: string; hint: str
     };
   }
   const started = u.trial_started_at ? new Date(u.trial_started_at).getTime() : NaN;
-  // Still within the 7-day trial (+ a couple days' billing grace) and not in a
-  // terminal state → the outcome isn't decided yet.
+  // Only "In trial" while still inside the 7-day trial window. Past day 7 the
+  // charge has been attempted, so the outcome is decided even if Android never
+  // updated payment_status off "TRIAL".
   const stillPending =
     Number.isFinite(started) &&
-    started > Date.now() - 9 * 86_400_000 &&
+    started > Date.now() - 7 * 86_400_000 &&
     !/CANCEL|EXPIRE|PAST_DUE|INACTIVE|FREE/i.test(u.payment_status ?? "");
   if (stillPending) {
     return { label: "In trial", variant: "in-trial", hint: "Trial still in progress — may still convert." };
@@ -187,7 +188,7 @@ function statusTag(u: DayUser): { label: string; variant: string; hint?: string 
   // (tracked or inferred) and without a voluntary trial cancel — the charge failed
   // but no event was sent.
   const started = u.trial_started_at ? new Date(u.trial_started_at).getTime() : NaN;
-  const reachedChargeDay = Number.isFinite(started) && started <= Date.now() - 8 * 86_400_000;
+  const reachedChargeDay = Number.isFinite(started) && started <= Date.now() - 7 * 86_400_000;
   const notConverted = !u.became_active_at && u.post_trial_lessons === 0;
   if (
     u.platform === "android" &&
