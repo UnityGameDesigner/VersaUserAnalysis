@@ -19,6 +19,7 @@ returns table(
   time_zone text,
   trial_started_at timestamptz,
   became_active_at timestamptz,
+  canceled_from text,
   active_days int,
   lessons int,
   post_trial_lessons int,
@@ -36,7 +37,7 @@ returns table(
 )
 language sql stable as $$
   select u.user_id, u.preferred_name, u.learning_language, u.payment_status, u.age::text, u.time_zone,
-    u.trial_started_at, u.became_active_at,
+    u.trial_started_at, u.became_active_at, u.canceled_from,
     least(count(distinct (cl.created_at at time zone 'UTC')::date) filter (
       where cl.created_at >= u.trial_started_at
         and cl.created_at < u.trial_started_at + interval '7 days'
@@ -58,7 +59,7 @@ language sql stable as $$
   where u.trial_started_at is not null
     and (u.trial_started_at at time zone 'UTC')::date = day
   group by u.user_id, u.preferred_name, u.learning_language, u.payment_status, u.age, u.time_zone,
-    u.trial_started_at, u.became_active_at,
+    u.trial_started_at, u.became_active_at, u.canceled_from,
     u.platform, u.gender, u.native_language, u.level, u.reason, u.demand_tier,
     u.messaging_platform, u.tutor, u.completed_tutorial, u.previous_experience, u.attribution
   order by active_days desc, u.preferred_name;

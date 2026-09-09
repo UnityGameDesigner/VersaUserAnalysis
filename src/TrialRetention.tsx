@@ -100,6 +100,7 @@ interface DayUser {
   time_zone: string | null;
   trial_started_at: string | null;
   became_active_at: string | null;
+  canceled_from: string | null; // state they cancelled from: TRIAL / PAST_DUE / …
   active_days: number;
   lessons: number;
   post_trial_lessons: number; // lessons after day 8 = proof of paid access
@@ -164,15 +165,46 @@ function convertedBadge(u: DayUser): { label: string; variant: string; hint: str
   };
 }
 
-// The actual cancellation / billing state, shown alongside the Converted badge so
-// a user who cancelled (or hit a billing issue) still surfaces that — whether or
-// not they ever converted. Only these terminal states get a tag; Active/Trial
-// add nothing beyond the Converted badge. Reuses the plan-pill styles.
-function statusTag(payment_status: string | null): { label: string; variant: string } | null {
-  const s = (payment_status ?? "").toUpperCase();
+// The cancellation / billing state shown alongside the Converted badge. Billing
+// issues (involuntary — the trial-end charge failed) are the analog of iOS's
+// PAST_DUE. Because Android sends no billing events, they don't show as PAST_DUE:
+// instead canceled_from records the past-due origin (canceled_from='PAST_DUE'),
+// and where even that is missing we INFER a billing issue — an Android trial that
+// reached its charge day without converting and without a voluntary trial cancel
+// (the charge must have failed). Voluntary trial cancels (canceled_from='TRIAL')
+// stay "Cancelled". Reuses the plan-pill styles.
+function statusTag(u: DayUser): { label: string; variant: string; hint?: string } | null {
+  const s = (u.payment_status ?? "").toUpperCase();
+  const cf = (u.canceled_from ?? "").toUpperCase();
+
+  // Recorded billing issue — iOS PAST_DUE status, or the past-due origin captured
+  // in canceled_from (how Android's billing issues actually land).
+  if (s === "PAST_DUE" || cf === "PAST_DUE") return { label: "Billing issue", variant: "pastdue" };
+  // Voluntary opt-out during the trial.
+  if (cf === "TRIAL") return { label: "Cancelled", variant: "free" };
+
+  // Inferred billing issue: an Android trial that reached day 7 without converting
+  // (tracked or inferred) and without a voluntary trial cancel — the charge failed
+  // but no event was sent.
+  const started = u.trial_started_at ? new Date(u.trial_started_at).getTime() : NaN;
+  const reachedChargeDay = Number.isFinite(started) && started <= Date.now() - 8 * 86_400_000;
+  const notConverted = !u.became_active_at && u.post_trial_lessons === 0;
+  if (
+    u.platform === "android" &&
+    reachedChargeDay &&
+    notConverted &&
+    s !== "ACTIVE" &&
+    cf !== "ACTIVE"
+  ) {
+    return {
+      label: "Billing issue*",
+      variant: "pastdue",
+      hint: "Inferred: Android sends no billing events, but this trial reached its charge day without converting or being voluntarily cancelled — the charge most likely failed.",
+    };
+  }
+
   if (s === "CANCELED" || s === "CANCELLED") return { label: "Cancelled", variant: "free" };
   if (s === "EXPIRED") return { label: "Expired", variant: "free" };
-  if (s === "PAST_DUE") return { label: "Billing issue", variant: "pastdue" };
   return null;
 }
 // user_info.age is TEXT with "0"/"-1" unset sentinels — show real ages only.
@@ -341,6 +373,7 @@ const TrialRetention: React.FC = () => {
               time_zone: (r.time_zone as string) ?? null,
               trial_started_at: (r.trial_started_at as string) ?? null,
               became_active_at: (r.became_active_at as string) ?? null,
+              canceled_from: (r.canceled_from as string) ?? null,
               active_days: Number(r.active_days ?? 0),
               lessons: Number(r.lessons ?? 0),
               post_trial_lessons: Number(r.post_trial_lessons ?? 0),
@@ -982,7 +1015,7 @@ const TrialRetention: React.FC = () => {
                                 <td>
                                   {(() => {
                                     const b = convertedBadge(u);
-                                    const tag = statusTag(u.payment_status);
+                                    const tag = statusTag(u);
                                     return (
                                       <span style={{ display: "inline-flex", flexWrap: "wrap", gap: "0.3rem", alignItems: "center" }}>
                                         <span
@@ -992,7 +1025,10 @@ const TrialRetention: React.FC = () => {
                                           {b.label}
                                         </span>
                                         {tag && (
-                                          <span className={`plan-pill plan-pill--${tag.variant}`} title={`Current status: ${u.payment_status}`}>
+                                          <span
+                                            className={`plan-pill plan-pill--${tag.variant}`}
+                                            title={tag.hint ?? `Current status: ${u.payment_status}${u.canceled_from ? ` · cancelled from ${u.canceled_from}` : ""}`}
+                                          >
                                             {tag.label}
                                           </span>
                                         )}
