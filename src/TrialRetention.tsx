@@ -6,6 +6,7 @@ import {
   LineChart,
   Line,
   BarChart,
+  ComposedChart,
   Bar,
   Cell,
   LabelList,
@@ -69,6 +70,7 @@ function cohortLabel(iso: string, gran: Gran): string {
 interface DailyRow {
   d: string;
   trials: number;
+  conversions: number; // # of that day's trial starters who became active (paying)
   avg_active: number;
   median_active: number;
   max_active: number;
@@ -319,6 +321,7 @@ const TrialRetention: React.FC = () => {
           (data ?? []).map((r: Record<string, unknown>) => ({
             d: String(r.d),
             trials: Number(r.trials ?? 0),
+            conversions: Number(r.conversions ?? 0),
             avg_active: Number(r.avg_active ?? 0),
             median_active: Number(r.median_active ?? 0),
             max_active: Number(r.max_active ?? 0),
@@ -853,22 +856,36 @@ const TrialRetention: React.FC = () => {
                     {dayName(k)}
                   </span>
                 ))}
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", fontWeight: 600, color: "#111827" }}>
+                  <span style={{ width: 16, height: 3, borderRadius: 2, background: "#111827", display: "inline-block" }} />
+                  Conversions (right axis)
+                </span>
               </div>
               <div style={{ width: "100%", height: 320, cursor: "pointer" }}>
                 <ResponsiveContainer>
-                  <BarChart
+                  <ComposedChart
                     data={dailyChart}
-                    margin={{ top: 24, right: 20, bottom: 8, left: 0 }}
+                    margin={{ top: 24, right: 44, bottom: 8, left: 0 }}
                     stackOffset={stackMode === "share" ? "expand" : undefined}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={8} />
                     <YAxis
+                      yAxisId="left"
                       tick={{ fontSize: 12 }}
                       width={40}
                       allowDecimals={false}
                       domain={stackMode === "share" ? [0, 1] : undefined}
                       tickFormatter={stackMode === "share" ? (v: number) => `${Math.round(v * 100)}%` : undefined}
+                    />
+                    <YAxis
+                      yAxisId="right"
+                      orientation="right"
+                      tick={{ fontSize: 11, fill: "#111827" }}
+                      width={30}
+                      allowDecimals={false}
+                      domain={[0, "auto"]}
+                      label={{ value: "conv", angle: 90, position: "insideRight", fontSize: 10, fill: "#6b7280" }}
                     />
                     <Tooltip
                       cursor={{ fill: "rgba(79,70,229,0.06)" }}
@@ -880,11 +897,18 @@ const TrialRetention: React.FC = () => {
                         };
                         if (!active || !payload || payload.length === 0) return null;
                         const row = dailyChart.find((r) => r.label === String(label));
-                        const items = payload.filter((p) => Number(p.value) > 0).reverse();
+                        const items = payload
+                          .filter((p) => p.name !== "Conversions" && Number(p.value) > 0)
+                          .reverse();
                         return (
                           <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 10px", fontSize: 12, boxShadow: "0 2px 10px rgba(0,0,0,.1)" }}>
                             <div style={{ fontWeight: 600, marginBottom: 4 }}>
                               {String(label)} · {row?.trials ?? 0} trials{row?.partial ? " (partial)" : ""}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontWeight: 600 }}>
+                              <span style={{ width: 10, height: 2, background: "#111827", display: "inline-block" }} />
+                              Converted: {row?.conversions ?? 0}
+                              {row && row.trials ? ` (${Math.round((100 * (row.conversions ?? 0)) / row.trials)}%)` : ""}
                             </div>
                             {items.map((p, i) => (
                               <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -900,6 +924,7 @@ const TrialRetention: React.FC = () => {
                     {Array.from({ length: 8 }, (_, k) => (
                       <Bar
                         key={k}
+                        yAxisId="left"
                         dataKey={dayKey(k)}
                         name={dayName(k)}
                         stackId="d"
@@ -926,7 +951,29 @@ const TrialRetention: React.FC = () => {
                         )}
                       </Bar>
                     ))}
-                  </BarChart>
+                    {/* Conversions per day — count of that day's trial starters who
+                        became paying. Own right axis; drawn on top of the bars. */}
+                    <Line
+                      yAxisId="right"
+                      type="monotone"
+                      dataKey="conversions"
+                      name="Conversions"
+                      stroke="#111827"
+                      strokeWidth={2.5}
+                      isAnimationActive={false}
+                      dot={{ r: 3, fill: "#111827", stroke: "#fff", strokeWidth: 1.5 }}
+                      activeDot={{ r: 5 }}
+                    >
+                      <LabelList
+                        dataKey="conversions"
+                        position="top"
+                        fontSize={10}
+                        fontWeight={700}
+                        fill="#111827"
+                        formatter={(v: React.ReactNode) => (Number(v) > 0 ? String(v) : "")}
+                      />
+                    </Line>
+                  </ComposedChart>
                 </ResponsiveContainer>
               </div>
             </div>
