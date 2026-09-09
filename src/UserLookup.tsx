@@ -45,6 +45,7 @@ interface UserInfo {
   demand_tier: string | null;
   payment_status: string;
   canceled_at: string | null;
+  canceled_from: string | null; // state they cancelled from: TRIAL / ACTIVE / PAST_DUE / …
   last_completed_at: string | null;
   // For trial-outcome + conversion-likelihood pills (see lib/trialOutcome,
   // lib/conversionScore). The extra demographic fields feed the score.
@@ -341,6 +342,69 @@ const GoalsSkillsPanel: React.FC<{ goals: UserGoal[]; skills: UserSkill[] }> = (
           })}
         </div>
       )}
+    </div>
+  );
+};
+
+// Human-readable gap between two moments (last lesson → cancellation).
+function fmtGap(ms: number): string {
+  const min = ms / 60000;
+  if (min < 60) return `${Math.max(1, Math.round(min))} min`;
+  const h = min / 60;
+  if (h < 48) return `${h < 10 ? h.toFixed(1) : Math.round(h)} h`;
+  return `${(h / 24).toFixed(1)} days`;
+}
+
+// For a user who cancelled their TRIAL (canceled_from='TRIAL'), a factual row
+// showing WHEN they cancelled relative to the lessons they completed: how far
+// into the trial, how many lessons before vs after the cancel, and how long
+// after their last lesson they pulled the plug. Renders nothing otherwise.
+const TrialCancellationRow: React.FC<{ user: UserInfo; lessons: CompletedLesson[] }> = ({
+  user,
+  lessons,
+}) => {
+  if ((user.canceled_from ?? "").toUpperCase() !== "TRIAL" || !user.canceled_at) return null;
+  const canceledAt = new Date(user.canceled_at).getTime();
+  if (!Number.isFinite(canceledAt)) return null;
+  const trialStart = user.trial_started_at ? new Date(user.trial_started_at).getTime() : null;
+  const daysIn = trialStart != null ? (canceledAt - trialStart) / 86_400_000 : null;
+
+  const times = lessons
+    .map((l) => new Date(l.created_at).getTime())
+    .filter((t) => Number.isFinite(t))
+    .sort((a, b) => a - b);
+  const before = times.filter((t) => t <= canceledAt);
+  const after = times.length - before.length;
+  const lastBefore = before.length ? before[before.length - 1] : null;
+
+  return (
+    <div className="trial-cancel-banner">
+      <div className="trial-cancel-head">
+        <span className="trial-cancel-title">🚫 Trial cancelled</span>
+        <span className="trial-cancel-when">
+          {format(new Date(canceledAt), "MMM d, yyyy · h:mm a")}
+        </span>
+      </div>
+      <div className="trial-cancel-facts">
+        {daysIn != null && (
+          <span>
+            <strong>{daysIn.toFixed(1)} days</strong> into the trial
+          </span>
+        )}
+        <span>
+          after <strong>{before.length}</strong> of {times.length} lesson
+          {times.length === 1 ? "" : "s"}
+          {after > 0 ? ` · ${after} more after cancelling` : ""}
+        </span>
+        {lastBefore != null && (
+          <span>
+            last lesson <strong>{fmtGap(canceledAt - lastBefore)}</strong> before cancelling
+          </span>
+        )}
+        {before.length === 0 && times.length > 0 && (
+          <span>cancelled before their first completed lesson</span>
+        )}
+      </div>
     </div>
   );
 };
@@ -827,7 +891,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           `user_id, preferred_name, age, gender, native_language,
            learning_language, level, reason, tutor, daily_streak, last_logged_in,
            time_zone, attribution, demand_tier, payment_status,
-           canceled_at, last_completed_at, trial_started_at, became_active_at,
+           canceled_at, canceled_from, last_completed_at, trial_started_at, became_active_at,
            platform, messaging_platform, completed_tutorial, previous_experience`,
         )
         .eq("user_id", trimmed)
@@ -1139,6 +1203,9 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 </div>
               )}
             </div>
+
+            {/* When they cancelled their trial, relative to their lessons */}
+            <TrialCancellationRow user={user} lessons={lessons} />
 
             {/* Why they likely cancelled (AI) — churned users only */}
             {(user.payment_status === "CANCELED" || user.payment_status === "PAST_DUE") && (

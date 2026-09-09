@@ -2019,6 +2019,33 @@ body,
   color: #b42318;
 }
 
+/* Trial-cancellation timing banner (User Lookup profile) */
+.trial-cancel-banner {
+  margin: 1rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid #f3d0cd;
+  border-left: 3px solid #dc2626;
+  border-radius: 10px;
+  background: #fdf3f2;
+}
+.trial-cancel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.trial-cancel-title { font-weight: 700; color: #991b1b; }
+.trial-cancel-when { font-size: 0.82rem; color: #9a5b57; }
+.trial-cancel-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.1rem;
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+  color: #6b4a48;
+}
+.trial-cancel-facts strong { color: #7f1d1d; }
+
 .user-platform-badge {
   display: inline-flex;
   padding: 0.18rem 0.6rem;

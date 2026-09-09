@@ -42,11 +42,18 @@ export const TRIAL_OUTCOME_META: Record<
 export const TRIAL_OUTCOME_ORDER: TrialOutcome[] = ["converted", "churned", "in_trial", "none"];
 
 export function trialOutcome(
-  meta: { trial_started_at?: string | null; became_active_at?: string | null } | undefined | null,
+  meta:
+    | { trial_started_at?: string | null; became_active_at?: string | null; canceled_at?: string | null }
+    | undefined
+    | null,
 ): TrialOutcome {
   if (!meta) return "none";
   if (meta.became_active_at) return "converted";
   if (!meta.trial_started_at) return "none";
+  // If they cancelled without ever converting, the outcome is already decided
+  // (churned) — don't show "in trial" just because it's within the resolve
+  // window. (Callers that don't pass canceled_at keep the time-based behavior.)
+  if (meta.canceled_at) return "churned";
   const started = new Date(meta.trial_started_at).getTime();
   if (Number.isNaN(started)) return "none";
   return started <= Date.now() - TRIAL_RESOLVE_DAYS * 86_400_000 ? "churned" : "in_trial";
