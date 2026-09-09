@@ -204,6 +204,8 @@ const TrialRetention: React.FC = () => {
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [dayUsers, setDayUsers] = useState<DayUser[]>([]);
   const [dayUsersLoading, setDayUsersLoading] = useState(false);
+  const [dayUsersError, setDayUsersError] = useState<string | null>(null);
+  const [dayReload, setDayReload] = useState(0); // bump to retry the drill-down fetch
   const [dailyRows, setDailyRows] = useState<DailyRow[]>([]);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyError, setDailyError] = useState<string | null>(null);
@@ -288,18 +290,38 @@ const TrialRetention: React.FC = () => {
     };
   }, [chartType, appliedRange]);
 
-  // Fetch the trial starters for a clicked day.
+  // Fetch the trial starters for a clicked day. Retries transient errors (e.g. a
+  // PostgREST schema-cache reload after an RPC change, or a network blip) before
+  // giving up, and surfaces a real error state — so a failed call never gets
+  // silently shown as "No trial starters found" for a day that actually has some.
   useEffect(() => {
     if (!selectedDay) return;
     let cancelled = false;
     (async () => {
       setDayUsersLoading(true);
-      const { data, error } = await supabase.rpc("trial_day_users", { day: selectedDay });
+      setDayUsersError(null);
+      let data: unknown[] | null = null;
+      let error: { message?: string } | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await supabase.rpc("trial_day_users", { day: selectedDay });
+        if (cancelled) return;
+        if (!res.error) {
+          data = res.data as unknown[] | null;
+          error = null;
+          break;
+        }
+        error = res.error;
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+      }
       if (cancelled) return;
+      if (error) {
+        setDayUsers([]);
+        setDayUsersError(error.message || "Failed to load trial starters.");
+        setDayUsersLoading(false);
+        return;
+      }
       setDayUsers(
-        error
-          ? []
-          : (data ?? []).map((r: Record<string, unknown>) => ({
+        (data ?? []).map((r) => (r as Record<string, unknown>)).map((r) => ({
               user_id: String(r.user_id),
               preferred_name: (r.preferred_name as string) ?? null,
               learning_language: (r.learning_language as string) ?? null,
@@ -328,7 +350,7 @@ const TrialRetention: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [selectedDay]);
+  }, [selectedDay, dayReload]);
 
   // Reset the day drill-down when the underlying data/range changes.
   useEffect(() => {
@@ -881,6 +903,15 @@ const TrialRetention: React.FC = () => {
                 {dayUsersLoading ? (
                   <div style={{ textAlign: "center", padding: "1.5rem" }}>
                     <div className="loading-spinner"></div>
+                  </div>
+                ) : dayUsersError ? (
+                  <div className="empty-state" style={{ padding: "1.5rem", color: "#b42318" }}>
+                    Couldn’t load trial starters — {dayUsersError}
+                    <div style={{ marginTop: "0.75rem" }}>
+                      <button className="ret-seg-btn" onClick={() => setDayReload((n) => n + 1)}>
+                        Retry
+                      </button>
+                    </div>
                   </div>
                 ) : dayUsers.length === 0 ? (
                   <div className="empty-state" style={{ padding: "1.5rem" }}>No trial starters found for this day.</div>
