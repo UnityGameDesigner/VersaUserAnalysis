@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "./lib/supabase";
 import { getCountryFromTimezone } from "./lib/timezone";
-import { translateText } from "./lib/translate";
+import { translateText, translateBatch } from "./lib/translate";
 import { parseTranscript } from "./lib/lessonMetrics";
 import {
   LessonBadges,
@@ -513,6 +513,7 @@ const TranscriptCard: React.FC<{
   const [convTranslations, setConvTranslations] = useState<string[] | null>(null);
   const [showConvTranslation, setShowConvTranslation] = useState(false);
   const [translatingConv, setTranslatingConv] = useState(false);
+  const [convTranslateError, setConvTranslateError] = useState<string | null>(null);
   // Model-graded tutor performance for this conversation. Seeded from
   // localStorage so an evaluation survives page refreshes.
   const [evaluation, setEvaluation] = useState<TutorEvaluation | null>(
@@ -548,12 +549,13 @@ const TranscriptCard: React.FC<{
       return;
     }
     setTranslatingConv(true);
+    setConvTranslateError(null);
     try {
-      const results = await Promise.all(
-        messages.map((m) => (m.text.trim() ? translateText(m.text) : Promise.resolve(m.text))),
-      );
+      const results = await translateBatch(messages.map((m) => m.text));
       setConvTranslations(results);
       setShowConvTranslation(true);
+    } catch (e) {
+      setConvTranslateError(e instanceof Error ? e.message : "Translation failed");
     } finally {
       setTranslatingConv(false);
     }
@@ -909,6 +911,9 @@ const TranscriptCard: React.FC<{
                   ? "Show Original"
                   : "Translate Conversation"}
             </button>
+            {convTranslateError && (
+              <span className="transcript-translate-error">{convTranslateError}</span>
+            )}
           </div>
           {messages.map((m, i) => {
             const translated = showConvTranslation && convTranslations
