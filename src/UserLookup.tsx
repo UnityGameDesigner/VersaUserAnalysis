@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { supabase } from "./lib/supabase";
 import { translateBatch } from "./lib/translate";
 import { parseTranscript } from "./lib/lessonMetrics";
@@ -25,6 +25,7 @@ import { LessonBadges } from "./LessonBadges";
 import { trialOutcome, TRIAL_OUTCOME_META } from "./lib/trialOutcome";
 import { scoreConversion, CONV_TIER_META } from "./lib/conversionScore";
 import { fetchInterests, prettyInterest } from "./lib/interests";
+import { chatAboutUser, type ChatMessage } from "./lib/userChat";
 import { analyzeCancellation, reasonMeta, type CancelAnalysis } from "./lib/analyzeCancellation";
 import { getCancelAnalysis, saveCancelAnalysis } from "./lib/cancelAnalysisStore";
 import { format } from "date-fns";
@@ -414,6 +415,188 @@ const TrialCancellationRow: React.FC<{ user: UserInfo; lessons: CompletedLesson[
 // Because Android doesn't send billing events, conversion is undercounted: a
 // trial with lessons AFTER the window had paid access, so it converted even if
 // became_active_at was never recorded — surfaced here as "Converted (inferred)".
+const CHAT_SUGGESTIONS = [
+  "Summarize this learner's progress and engagement.",
+  "What topics or grammar do they struggle with most?",
+  "Why might they have churned / not converted?",
+  "How well does the tutor adapt to their level?",
+];
+
+// Build the system instruction: the learner's profile + the full text of every
+// lesson (newest first), under a character budget so a heavy user still fits.
+function buildChatContext(
+  user: UserInfo,
+  lessons: CompletedLesson[],
+  goals: UserGoal[],
+  skills: UserSkill[],
+  interests: string[],
+): string {
+  const out: string[] = [];
+  out.push(
+    "You are an analyst assistant for Versa, a language-learning app where an AI voice tutor holds spoken lessons with learners. " +
+      "You are given ONE learner's profile and the full transcripts of their lessons with the tutor. " +
+      "Answer the Versa team's questions about THIS learner using only the provided data. " +
+      "Be concise and specific — cite lesson numbers and short quotes when useful. If something isn't in the data, say so instead of guessing. " +
+      "Write in plain text: do NOT use markdown formatting (no **bold**, #headers, or *); a leading dash for list items is fine.",
+  );
+  out.push("\n=== LEARNER PROFILE ===");
+  out.push(`Name: ${user.preferred_name ?? "Unknown"}`);
+  const bits = [
+    user.age != null && user.age !== -1 ? `${user.age}y` : null,
+    user.gender,
+    user.level ? `level ${user.level}` : null,
+  ].filter(Boolean);
+  if (bits.length) out.push(bits.join(" · "));
+  out.push(`Learning ${user.learning_language ?? "?"} · native ${user.native_language ?? "?"}`);
+  if (user.reason) out.push(`Stated reason for learning: ${user.reason}`);
+  out.push(
+    `Payment status: ${user.payment_status}${user.canceled_from ? ` (cancelled from ${user.canceled_from})` : ""}`,
+  );
+  if (user.time_zone) out.push(`Timezone: ${user.time_zone}`);
+  if (goals.length)
+    out.push(
+      `Goals: ${goals
+        .map(
+          (g) =>
+            `${g.goal_name}${g.progress_score != null ? ` (${Math.round(Number(g.progress_score) * 100)}%)` : ""}`,
+        )
+        .join("; ")}`,
+    );
+  if (skills.length)
+    out.push(
+      `Skills (top): ${skills
+        .slice(0, 15)
+        .map((s) => `${s.skill_name} ${Math.round(Number(s.mastery_score ?? 0) * 100)}%`)
+        .join(", ")}`,
+    );
+  if (interests.length) out.push(`Interests: ${interests.slice(0, 40).join(", ")}`);
+
+  out.push(`\n=== LESSON TRANSCRIPTS (${lessons.length} lessons, newest first) ===`);
+  let budget = 350_000; // chars (~90k tokens) — plenty for flash, bounds payload
+  for (let i = 0; i < lessons.length; i++) {
+    const l = lessons[i];
+    const msgs = parseTranscript(l.conversation_transcript);
+    if (msgs.length === 0) continue;
+    const chunk =
+      `\n--- Lesson #${l.lesson_id} · ${format(new Date(l.created_at), "MMM d, yyyy")}` +
+      `${l.user_rating_feedback ? ` · rated ${l.user_rating_feedback}/5` : ""} ---\n` +
+      msgs.map((m) => `${m.role === "user" ? "Learner" : "Tutor"}: ${m.text}`).join("\n");
+    if (chunk.length > budget) {
+      out.push(`\n[… ${lessons.length - i} older lessons omitted to fit the context window …]`);
+      break;
+    }
+    budget -= chunk.length;
+    out.push(chunk);
+  }
+  return out.join("\n");
+}
+
+// "Ask AI about this user" — a chat that reads all of the learner's transcripts
+// (via /api/chat → Gemini) and answers questions about them. Collapsed by default.
+const UserChatPanel: React.FC<{
+  user: UserInfo;
+  lessons: CompletedLesson[];
+  goals: UserGoal[];
+  skills: UserSkill[];
+  interests: string[];
+}> = ({ user, lessons, goals, skills, interests }) => {
+  const [open, setOpen] = useState(false);
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const context = useMemo(
+    () => buildChatContext(user, lessons, goals, skills, interests),
+    [user, lessons, goals, skills, interests],
+  );
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [chat, loading]);
+
+  const send = async (text: string) => {
+    const q = text.trim();
+    if (!q || loading) return;
+    setError(null);
+    const next: ChatMessage[] = [...chat, { role: "user", content: q }];
+    setChat(next);
+    setInput("");
+    setLoading(true);
+    try {
+      const reply = await chatAboutUser(context, next);
+      setChat([...next, { role: "assistant", content: reply }]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Chat failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="lookup-lessons">
+      <h3
+        className="lookup-lessons-title user-chat-head"
+        onClick={() => setOpen((o) => !o)}
+        title="Chat with an AI that has read all of this user's lessons"
+      >
+        🤖 Ask AI about this user <span className="user-chat-caret">{open ? "▲" : "▼"}</span>
+      </h3>
+      {open && (
+        <div className="user-chat">
+          <div className="user-chat-messages" ref={scrollRef}>
+            {chat.length === 0 && (
+              <div className="user-chat-empty">
+                Ask anything about {user.preferred_name || "this user"}'s {lessons.length} lesson
+                {lessons.length === 1 ? "" : "s"} — progress, struggles, why they churned, tutor quality…
+                <div className="user-chat-suggestions">
+                  {CHAT_SUGGESTIONS.map((s) => (
+                    <button key={s} className="user-chat-suggestion" onClick={() => send(s)} disabled={loading}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {chat.map((m, i) => (
+              <div key={i} className={`user-chat-msg user-chat-msg--${m.role}`}>
+                <span className="user-chat-role">{m.role === "user" ? "You" : "AI"}</span>
+                <div className="user-chat-text">{m.content}</div>
+              </div>
+            ))}
+            {loading && (
+              <div className="user-chat-msg user-chat-msg--assistant">
+                <span className="user-chat-role">AI</span>
+                <div className="user-chat-text user-chat-thinking">Reading the transcripts…</div>
+              </div>
+            )}
+            {error && <div className="user-chat-error">{error}</div>}
+          </div>
+          <form
+            className="user-chat-input-row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              send(input);
+            }}
+          >
+            <input
+              className="user-chat-input"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask about this user…"
+              disabled={loading}
+            />
+            <button className="user-chat-send" type="submit" disabled={loading || !input.trim()}>
+              Send
+            </button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ExpectedConversionRow: React.FC<{ user: UserInfo; lessons: CompletedLesson[] }> = ({
   user,
   lessons,
@@ -1258,6 +1441,15 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 </div>
               )}
             </div>
+
+            {/* AI chat over all of this user's transcripts */}
+            <UserChatPanel
+              user={user}
+              lessons={lessons}
+              goals={goals}
+              skills={skills}
+              interests={interests}
+            />
 
             {/* When the trial should have converted + inferred outcome */}
             <ExpectedConversionRow user={user} lessons={lessons} />

@@ -109,15 +109,53 @@ function tutorEvalVertexProxy(
     }
   }
 
+  // Free-form chat over a user's transcripts (the "Ask AI about this user" panel
+  // on the User Lookup profile). The client sends a system instruction (profile +
+  // all transcripts) and the running message history; we relay to Gemini and
+  // return plain text. POST { system, messages:[{role,content}] } -> { text }.
+  const chatHandler = async (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== 'POST') {
+      res.statusCode = 405
+      res.end()
+      return
+    }
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    res.setHeader('Content-Type', 'application/json')
+    try {
+      const { system, messages } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      const contents = (Array.isArray(messages) ? messages : []).map(
+        (m: { role?: string; content?: string }) => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: String(m.content ?? '') }],
+        }),
+      )
+      const ai = await getClient()
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+        config: { systemInstruction: String(system ?? '') },
+      })
+      res.end(JSON.stringify({ text: response.text ?? '' }))
+    } catch (e) {
+      clientPromise = null
+      const status = (e as { status?: number }).status
+      res.statusCode = typeof status === 'number' ? status : 500
+      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }))
+    }
+  }
+
   return {
     name: 'tutor-eval-vertex-proxy',
     configureServer(server) {
       server.middlewares.use('/api/evaluate-tutor', handler)
       server.middlewares.use('/api/translate-batch', translateHandler)
+      server.middlewares.use('/api/chat', chatHandler)
     },
     configurePreviewServer(server) {
       server.middlewares.use('/api/evaluate-tutor', handler)
       server.middlewares.use('/api/translate-batch', translateHandler)
+      server.middlewares.use('/api/chat', chatHandler)
     },
   }
 }
