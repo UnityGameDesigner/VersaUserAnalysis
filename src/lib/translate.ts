@@ -13,7 +13,7 @@ export async function translateText(text: string): Promise<string> {
   // backoff before giving up — pairs with translateMany's concurrency cap.
   for (let attempt = 0; ; attempt++) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 8000);
     let res: Response;
     try {
       res = await fetch("/api/translate", {
@@ -25,8 +25,10 @@ export async function translateText(text: string): Promise<string> {
     } finally {
       clearTimeout(timeout);
     }
-    if (res.status === 429 && attempt < 4) {
-      await new Promise((r) => setTimeout(r, 500 * 2 ** attempt + Math.random() * 300));
+    // Retry rate-limits only briefly — conversation translation has a Gemini
+    // fallback, so fail over fast rather than backing off for many seconds.
+    if (res.status === 429 && attempt < 2) {
+      await new Promise((r) => setTimeout(r, 400 * 2 ** attempt + Math.random() * 200));
       continue;
     }
     if (!res.ok) throw new Error(`Translation failed (${res.status})`);
@@ -124,35 +126,73 @@ export async function translateLines(texts: string[]): Promise<string[]> {
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(2, chunks.length || 1) }, worker));
+  // Run chunks in parallel (most conversations are only a few chunks) so the whole
+  // transcript translates in roughly one round-trip.
+  await Promise.all(Array.from({ length: Math.min(6, chunks.length || 1) }, worker));
   return out;
 }
 
-// Translate a whole conversation reliably. Primary path is the dev server's
-// /api/translate-batch (Gemini) — one request, no per-IP rate limit, preserves
-// order/length. Falls back to the batched gtx path (translateLines) if Gemini is
-// unavailable or returns the wrong number of lines. Empty inputs pass through.
+// Translate a whole conversation FAST: split it into small chunks and translate
+// them in parallel via Gemini flash-lite (/api/translate-batch). A 35-turn
+// transcript finishes in ~1.5s instead of ~6s for one big sequential call. Falls
+// back to the batched gtx path only if the Gemini path fails outright. Preserves
+// order/length; empty inputs pass through.
+const TRANSLATE_CHUNK = 8; // messages per Gemini request
+const TRANSLATE_CONCURRENCY = 8; // max parallel requests (bounds very long transcripts)
+
 export async function translateBatch(texts: string[]): Promise<string[]> {
   if (texts.length === 0) return [];
-  try {
-    const res = await fetch("/api/translate-batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts }),
-    });
-    if (res.ok) {
-      const json = await res.json();
-      const t = json?.translations;
-      if (Array.isArray(t) && t.length === texts.length) {
-        return texts.map((orig, i) =>
-          typeof t[i] === "string" && t[i].trim() ? t[i] : orig,
-        );
-      }
-    }
-  } catch {
-    // fall through to gtx
+  const chunks: string[][] = [];
+  for (let i = 0; i < texts.length; i += TRANSLATE_CHUNK) {
+    chunks.push(texts.slice(i, i + TRANSLATE_CHUNK));
   }
-  return translateLines(texts);
+  try {
+    const results = new Array<string[]>(chunks.length);
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const i = next++;
+        if (i >= chunks.length) return;
+        results[i] = await geminiChunk(chunks[i]);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(TRANSLATE_CONCURRENCY, chunks.length) }, worker),
+    );
+    return results.flat();
+  } catch {
+    return translateLines(texts); // last-ditch (only helps if gtx isn't rate-limited)
+  }
+}
+
+// One Gemini chunk, with a single retry for a transient hiccup so one bad chunk
+// doesn't sink the whole conversation.
+async function geminiChunk(texts: string[]): Promise<string[]> {
+  try {
+    return await geminiBatch(texts);
+  } catch {
+    return await geminiBatch(texts);
+  }
+}
+
+// Gemini call that translates one array. Throws on failure so the caller can
+// surface an error instead of silently showing the original.
+async function geminiBatch(texts: string[]): Promise<string[]> {
+  const res = await fetch("/api/translate-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ texts }),
+  });
+  if (!res.ok) throw new Error(`Translation failed (${res.status})`);
+  const json = await res.json();
+  if (json && typeof json === "object" && "error" in json) {
+    throw new Error(`Translation failed: ${(json as { error: string }).error}`);
+  }
+  const t = json?.translations;
+  if (Array.isArray(t) && t.length === texts.length) {
+    return texts.map((orig, i) => (typeof t[i] === "string" && t[i].trim() ? t[i] : orig));
+  }
+  throw new Error("Translation failed");
 }
 
 // Module-level translation cache, keyed by the trimmed source text. Persists for

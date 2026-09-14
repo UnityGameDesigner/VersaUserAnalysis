@@ -12,7 +12,11 @@ function tutorEvalVertexProxy(
   model: string,
   location: string,
   keyFile?: string,
+  translateModel?: string,
 ): Plugin {
+  // Translation is a simple task — use a faster/cheaper model than the eval model
+  // when configured, else fall back to the eval model.
+  const tModel = translateModel || model
   let clientPromise: Promise<import('@google/genai').GoogleGenAI> | null = null
   const getClient = () => {
     clientPromise ??= import('@google/genai').then(
@@ -85,7 +89,7 @@ function tutorEvalVertexProxy(
       }
       const ai = await getClient()
       const response = await ai.models.generateContent({
-        model,
+        model: tModel,
         contents:
           'Translate each string in this JSON array to natural English. Return ONLY a ' +
           'JSON array of strings of the SAME length and order. If a string is already ' +
@@ -221,6 +225,7 @@ export default defineConfig(({ mode }) => {
         // returns a permanent 429 RESOURCE_EXHAUSTED; the regional endpoints do.
         env.VERTEX_LOCATION || 'us-central1',
         env.GOOGLE_APPLICATION_CREDENTIALS || undefined,
+        env.GEMINI_TRANSLATE_MODEL || 'gemini-2.5-flash-lite',
       ),
     ],
   }
