@@ -2880,6 +2880,31 @@ body,
   line-height: 1.45;
 }
 
+/* Cross-family judge panel chips (Gemini + Sonnet 5). */
+.eval-panel-judges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.3rem 0 0;
+}
+.eval-judge-chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid;
+}
+.eval-judge-chip--ok {
+  background: #eef2ff;
+  color: #4338ca;
+  border-color: #c7d2fe;
+}
+.eval-judge-chip--off {
+  background: #f3f4f6;
+  color: #9ca3af;
+  border-color: #e5e7eb;
+}
+
 .eval-dimensions {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

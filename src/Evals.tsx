@@ -735,9 +735,11 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
           <h3>LLM-judged sample</h3>
         </div>
         <p className="ret-chart-sub" style={{ maxWidth: "80ch" }}>
-          Pick a day and grade a random sample of its lessons with the tutor rubric (student talk time, error
-          correction, level fit, engagement, teaching value → overall 1–10). Each lesson is judged once and cached
-          (shared with the Evaluations tab), so re-running is free. Running a sample makes one LLM call per uncached lesson.
+          Pick a day and grade a random sample of its lessons with the <strong>LearnLM</strong> tutor rubric — manages
+          cognitive load, inspires active learning, deepens metacognition, stimulates curiosity, adapts to the learner,
+          overall quality (each 1–10) — scored by a cross-family panel (Gemini + Claude Sonnet 5, mean-aggregated to
+          reduce single-model bias). Each lesson is judged once and cached (shared with the Evaluations tab), so
+          re-running is free.
         </p>
         <div className="controls-bar" style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
           <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>

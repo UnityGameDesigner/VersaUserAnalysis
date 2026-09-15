@@ -13,11 +13,79 @@ function tutorEvalVertexProxy(
   location: string,
   keyFile?: string,
   translateModel?: string,
+  claudeModel?: string,
+  claudeLocation?: string,
 ): Plugin {
   // Translation is a simple task — use a faster/cheaper model than the eval model
   // when configured, else fall back to the eval model.
   const tModel = translateModel || model
+  // Second judge for the cross-family eval panel: Claude on Vertex Model Garden
+  // (same GCP project / credentials as Gemini). Needs the model enabled AND online-
+  // prediction quota for it in the project, or calls come back 429 and the panel
+  // just drops this judge.
+  const cModel = claudeModel || 'claude-sonnet-5'
+  const cLocation = claudeLocation || 'us-east5'
   let clientPromise: Promise<import('@google/genai').GoogleGenAI> | null = null
+
+  // Vertex access token for the raw Anthropic endpoint (the @google/genai client
+  // only speaks Gemini). Reuses the same service-account key file as Gemini, or
+  // gcloud ADC when unset; google-auth-library refreshes the token as needed.
+  let authPromise: Promise<import('google-auth-library').GoogleAuth> | null = null
+  const getVertexToken = async (): Promise<string> => {
+    authPromise ??= import('google-auth-library').then(
+      ({ GoogleAuth }) =>
+        new GoogleAuth({
+          scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+          ...(keyFile ? { keyFile } : {}),
+        }),
+    )
+    const auth = await authPromise
+    const client = await auth.getClient()
+    const { token } = await client.getAccessToken()
+    if (!token) throw new Error('failed to mint a Vertex access token (check gcloud ADC / key file)')
+    return token
+  }
+
+  // Claude on Vertex judge. Forces structured output via a single-tool call whose
+  // input_schema is the eval schema, then returns the tool input as a JSON string
+  // (so the client parses it exactly like the Gemini path). Throws with the
+  // upstream HTTP status attached so a 429 (no quota) surfaces as-is.
+  const claudeVertexEval = async (system: string, prompt: string, schema: unknown): Promise<string> => {
+    const token = await getVertexToken()
+    const url =
+      `https://${cLocation}-aiplatform.googleapis.com/v1/projects/${projectId}` +
+      `/locations/${cLocation}/publishers/anthropic/models/${cModel}:rawPredict`
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        anthropic_version: 'vertex-2023-10-16',
+        max_tokens: 2048,
+        system,
+        messages: [{ role: 'user', content: prompt }],
+        tools: [{ name: 'submit_evaluation', description: 'Return the structured tutor evaluation.', input_schema: schema }],
+        tool_choice: { type: 'tool', name: 'submit_evaluation' },
+      }),
+    })
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`
+      try {
+        const j = (await resp.json()) as { error?: { message?: string } }
+        detail = j?.error?.message || detail
+      } catch {
+        /* non-JSON body */
+      }
+      const err = new Error(detail) as Error & { status?: number }
+      err.status = resp.status
+      throw err
+    }
+    const json = (await resp.json()) as { content?: Array<{ type: string; input?: unknown; text?: string }> }
+    const tool = json.content?.find((c) => c.type === 'tool_use')
+    if (tool?.input !== undefined) return JSON.stringify(tool.input)
+    const textBlock = json.content?.find((c) => c.type === 'text')
+    if (textBlock?.text) return textBlock.text
+    throw new Error('Claude returned no structured evaluation.')
+  }
   const getClient = () => {
     clientPromise ??= import('@google/genai').then(
       ({ GoogleGenAI }) =>
@@ -45,7 +113,21 @@ function tutorEvalVertexProxy(
     for await (const chunk of req) chunks.push(chunk as Buffer)
     res.setHeader('Content-Type', 'application/json')
     try {
-      const { system, prompt, schema } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      const { system, prompt, schema, provider } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      // Second judge in the eval panel: Claude on Vertex. Handled separately so a
+      // failure (e.g. no Sonnet quota) returns its real status without touching the
+      // Gemini client.
+      if (provider === 'claude') {
+        try {
+          const text = await claudeVertexEval(system, prompt, schema)
+          res.end(JSON.stringify({ text }))
+        } catch (ce) {
+          const status = (ce as { status?: number }).status
+          res.statusCode = typeof status === 'number' ? status : 500
+          res.end(JSON.stringify({ error: ce instanceof Error ? ce.message : String(ce) }))
+        }
+        return
+      }
       const ai = await getClient()
       const response = await ai.models.generateContent({
         model,
@@ -226,6 +308,9 @@ export default defineConfig(({ mode }) => {
         env.VERTEX_LOCATION || 'us-central1',
         env.GOOGLE_APPLICATION_CREDENTIALS || undefined,
         env.GEMINI_TRANSLATE_MODEL || 'gemini-2.5-flash-lite',
+        // Second eval-panel judge (Claude on Vertex Model Garden).
+        env.CLAUDE_JUDGE_MODEL || 'claude-sonnet-5',
+        env.VERTEX_CLAUDE_LOCATION || 'us-east5',
       ),
     ],
   }

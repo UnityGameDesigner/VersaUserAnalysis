@@ -29,6 +29,19 @@ const TutorEvalPanel: React.FC<{
           </button>
         )}
       </div>
+      {evaluation.panel && evaluation.panel.judges.length > 1 && (
+        <div className="eval-panel-judges">
+          {evaluation.panel.judges.map((j) => (
+            <span
+              key={j.id}
+              className={`eval-judge-chip eval-judge-chip--${j.ok ? "ok" : "off"}`}
+              title={j.ok ? "Judge score" : j.error}
+            >
+              {j.label}: {j.ok ? `${j.overall_score}/10` : "unavailable"}
+            </span>
+          ))}
+        </div>
+      )}
       {showDetail && (
         <>
           <div className="eval-dimensions">

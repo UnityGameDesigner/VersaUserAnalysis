@@ -18,7 +18,10 @@ export interface SavedEvaluation {
   evaluation: TutorEvaluation;
 }
 
-const STORAGE_KEY = "versa-tutor-evals-v1";
+// v2 = LearnLM rubric + cross-family judge panel (see evaluateTutor). Bumped so
+// pre-LearnLM single-judge evaluations don't mix with the new methodology; the
+// old v1 data stays in localStorage untouched, just no longer read.
+const STORAGE_KEY = "versa-tutor-evals-v2";
 
 function readAll(): Record<string, SavedEvaluation> {
   try {
