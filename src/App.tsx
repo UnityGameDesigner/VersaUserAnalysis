@@ -9,6 +9,7 @@ import Saved from "./Saved";
 import RetentionAnalysis from "./RetentionAnalysis";
 import Feedback from "./Feedback";
 import Evaluations from "./Evaluations";
+import Evals from "./Evals";
 import RecentUsers from "./RecentUsers";
 import CancelledTrials from "./CancelledTrials";
 import TutorComparison from "./TutorComparison";
@@ -22,12 +23,12 @@ interface NavState {
   lookupUserId: string | null;
 }
 
-type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "feedback" | "retention" | "trial-retention" | "trial-conversion" | "cancelled-trials" | "cancel-reasons" | "tutor-comparison" | "user-lookup" | "ab-compare";
+type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "evals" | "feedback" | "retention" | "trial-retention" | "trial-conversion" | "cancelled-trials" | "cancel-reasons" | "tutor-comparison" | "user-lookup" | "ab-compare";
 
 function stateFromHash(): NavState {
   const hash = window.location.hash.replace("#", "");
   const [tab, userId] = hash.split(":");
-  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "feedback", "retention", "trial-retention", "trial-conversion", "cancelled-trials", "cancel-reasons", "tutor-comparison", "user-lookup", "ab-compare"];
+  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "evals", "feedback", "retention", "trial-retention", "trial-conversion", "cancelled-trials", "cancel-reasons", "tutor-comparison", "user-lookup", "ab-compare"];
   return {
     tab: validTabs.includes(tab as Tab) ? (tab as Tab) : "dashboard",
     lookupUserId: userId || null,
@@ -130,6 +131,12 @@ const App: React.FC = () => {
             Evaluations
           </button>
           <button
+            className={`sidebar-nav-btn${activeTab === "evals" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("evals")}
+          >
+            Evals
+          </button>
+          <button
             className={`sidebar-nav-btn${activeTab === "feedback" ? " sidebar-nav-btn--active" : ""}`}
             onClick={() => navigate("feedback")}
           >
@@ -215,6 +222,12 @@ const App: React.FC = () => {
           <div className="dashboard-container">
             <div className="dashboard-inner">
               <Evaluations onUserClick={handleUserClick} />
+            </div>
+          </div>
+        ) : activeTab === "evals" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <Evals onUserClick={handleUserClick} />
             </div>
           </div>
         ) : activeTab === "feedback" ? (
