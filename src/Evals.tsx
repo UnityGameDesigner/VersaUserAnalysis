@@ -17,7 +17,7 @@ import { format, subDays } from "date-fns";
 import { supabase } from "./lib/supabase";
 import { evaluateTutor, scoreVariant, type TutorEvaluation } from "./lib/evaluateTutor";
 import { parseTranscript } from "./lib/lessonMetrics";
-import { getSavedEvaluation, saveEvaluation } from "./lib/evalStore";
+import { getSavedEvaluation, saveEvaluation, getAllEvaluations, type SavedEvaluation } from "./lib/evalStore";
 import TutorEvalPanel from "./TutorEvalPanel";
 import { Conversation } from "./Feedback";
 
@@ -73,8 +73,32 @@ interface JudgedItem {
 }
 
 const RATING_COLORS = ["#ef4444", "#f97316", "#eab308", "#84cc16", "#22c55e"]; // 1★→5★
-const JUDGE_CONCURRENCY = 4; // parallel LLM calls
+const JUDGE_CONCURRENCY = 4; // parallel LLM calls for a single day
+const RANGE_CONCURRENCY = 6; // parallel LLM calls when judging a whole range
 const iso = (d: Date) => format(d, "yyyy-MM-dd");
+
+// Coerce one lesson_eval_sample RPC row into a SampleRow (used by both the
+// single-day sample and the range judge).
+function mapSampleRow(r: Record<string, unknown>): SampleRow {
+  return {
+    id: Number(r.id),
+    session_id: (r.session_id as string) ?? null,
+    user_id: String(r.user_id),
+    lesson_id: r.lesson_id == null ? null : Number(r.lesson_id),
+    created_at: String(r.created_at),
+    user_rating_feedback: r.user_rating_feedback == null ? null : Number(r.user_rating_feedback),
+    ended_early: Boolean(r.ended_early),
+    early_end_reason: (r.early_end_reason as string) ?? null,
+    exit_phase: (r.exit_phase as string) ?? null,
+    turns: Number(r.turns ?? 0),
+    preferred_name: (r.preferred_name as string) ?? null,
+    learning_language: (r.learning_language as string) ?? null,
+    native_language: (r.native_language as string) ?? null,
+    level: (r.level as string) ?? null,
+    reason: (r.reason as string) ?? null,
+    conversation_transcript: r.conversation_transcript,
+  };
+}
 
 const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserClick }) => {
   // ── Daily metrics ──────────────────────────────────────────────────────────
@@ -84,6 +108,13 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
   const [rows, setRows] = useState<DailyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Saved LLM judgements (localStorage, shared with the Evaluations tab) — drives
+  // the per-day LLM-quality trend, reconstructed by lesson date so it survives reloads.
+  const [savedEvals, setSavedEvals] = useState<SavedEvaluation[]>(() => getAllEvaluations());
+  const [rangeJudging, setRangeJudging] = useState(false);
+  const [rangeProg, setRangeProg] = useState<{ done: number; total: number } | null>(null);
+  const [rangeError, setRangeError] = useState<string | null>(null);
 
   const fetchDaily = useCallback(async () => {
     setLoading(true);
@@ -191,6 +222,48 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
     [summary],
   );
 
+  // Per-day LLM tutor-quality score, reconstructed from saved judgements whose
+  // lesson date falls in the current range (survives reloads via evalStore).
+  const llmByDay = useMemo(() => {
+    const m = new Map<string, { sum: number; n: number }>();
+    for (const e of savedEvals) {
+      const day = format(new Date(e.lessonDate), "yyyy-MM-dd");
+      if (applied.from && day < applied.from) continue;
+      if (applied.to && day > applied.to) continue;
+      const cur = m.get(day) ?? { sum: 0, n: 0 };
+      cur.sum += e.evaluation.overall_score;
+      cur.n += 1;
+      m.set(day, cur);
+    }
+    return m;
+  }, [savedEvals, applied]);
+
+  const llmTrend = useMemo(
+    () =>
+      rows.map((r) => {
+        const agg = llmByDay.get(r.d);
+        return {
+          d: r.d,
+          label: format(new Date(r.d + "T00:00:00"), "MMM d"),
+          llm_score: agg ? Math.round((agg.sum / agg.n) * 10) / 10 : null,
+          llm_n: agg?.n ?? 0,
+        };
+      }),
+    [rows, llmByDay],
+  );
+
+  const rangeStats = useMemo(() => {
+    let sum = 0;
+    let n = 0;
+    let days = 0;
+    for (const v of llmByDay.values()) {
+      sum += v.sum;
+      n += v.n;
+      days += 1;
+    }
+    return { avg: n ? sum / n : null, judged: n, days };
+  }, [llmByDay]);
+
   // ── LLM-judged sample ────────────────────────────────────────────────────────
   const [selectedDay, setSelectedDay] = useState(() => iso(subDays(new Date(), 1)));
   const [sampleSize, setSampleSize] = useState(10);
@@ -258,7 +331,88 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
     };
     await Promise.all(Array.from({ length: Math.min(JUDGE_CONCURRENCY, pending.length) }, worker));
     setJudging(false);
+    setSavedEvals(getAllEvaluations()); // refresh the LLM-quality trend
   }, []);
+
+  // Judge a random sample of EVERY day in the loaded range and build the per-day
+  // LLM-quality trend. Fetches each day's sample, then judges the uncached lessons
+  // through one global worker pool; already-judged lessons are skipped (not re-billed).
+  const judgeRange = useCallback(async () => {
+    if (rows.length === 0 || rangeJudging) return;
+    setRangeJudging(true);
+    setRangeError(null);
+    setRangeProg(null);
+    try {
+      const days = rows.map((r) => r.d);
+      // Pull each day's sample (bounded concurrency).
+      const samples: SampleRow[] = [];
+      let di = 0;
+      const fetchWorker = async (): Promise<void> => {
+        for (;;) {
+          const k = di++;
+          if (k >= days.length) return;
+          const { data, error } = await supabase.rpc("lesson_eval_sample", {
+            day: days[k],
+            sample_size: sampleSize,
+            min_turns: minTurns,
+          });
+          if (error) throw new Error(error.message);
+          for (const r of (data ?? []) as Record<string, unknown>[]) samples.push(mapSampleRow(r));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(5, days.length) }, fetchWorker));
+
+      const toJudge = samples.filter((r) => !getSavedEvaluation(r.id));
+      let done = 0;
+      setRangeProg({ done: 0, total: toJudge.length });
+      if (toJudge.length === 0) {
+        setSavedEvals(getAllEvaluations());
+        return;
+      }
+      let ji = 0;
+      const judgeWorker = async (): Promise<void> => {
+        for (;;) {
+          const k = ji++;
+          if (k >= toJudge.length) return;
+          const row = toJudge[k];
+          const messages = parseTranscript(row.conversation_transcript);
+          if (messages.length > 0) {
+            try {
+              const ev = await evaluateTutor(messages, {
+                learningLanguage: row.learning_language,
+                nativeLanguage: row.native_language,
+                level: row.level,
+                reason: row.reason,
+                endedEarly: row.ended_early,
+              });
+              saveEvaluation({
+                rowId: row.id,
+                userId: row.user_id,
+                lessonId: row.lesson_id ?? 0,
+                lessonDate: row.created_at,
+                evaluatedAt: new Date().toISOString(),
+                userName: row.preferred_name,
+                endedEarly: row.ended_early,
+                turnCount: messages.length,
+                evaluation: ev,
+              });
+            } catch {
+              // one failed lesson shouldn't sink the batch
+            }
+          }
+          done += 1;
+          setRangeProg({ done, total: toJudge.length });
+          if (done % 10 === 0) setSavedEvals(getAllEvaluations()); // progressive trend
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(RANGE_CONCURRENCY, toJudge.length) }, judgeWorker));
+      setSavedEvals(getAllEvaluations());
+    } catch (e) {
+      setRangeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRangeJudging(false);
+    }
+  }, [rows, rangeJudging, sampleSize, minTurns]);
 
   const runSample = useCallback(
     async (day: string) => {
@@ -271,24 +425,7 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
           min_turns: minTurns,
         });
         if (error) throw new Error(error.message);
-        const sample: SampleRow[] = (data ?? []).map((r: Record<string, unknown>) => ({
-          id: Number(r.id),
-          session_id: (r.session_id as string) ?? null,
-          user_id: String(r.user_id),
-          lesson_id: r.lesson_id == null ? null : Number(r.lesson_id),
-          created_at: String(r.created_at),
-          user_rating_feedback: r.user_rating_feedback == null ? null : Number(r.user_rating_feedback),
-          ended_early: Boolean(r.ended_early),
-          early_end_reason: (r.early_end_reason as string) ?? null,
-          exit_phase: (r.exit_phase as string) ?? null,
-          turns: Number(r.turns ?? 0),
-          preferred_name: (r.preferred_name as string) ?? null,
-          learning_language: (r.learning_language as string) ?? null,
-          native_language: (r.native_language as string) ?? null,
-          level: (r.level as string) ?? null,
-          reason: (r.reason as string) ?? null,
-          conversation_transcript: r.conversation_transcript,
-        }));
+        const sample: SampleRow[] = (data ?? []).map((r: Record<string, unknown>) => mapSampleRow(r));
         if (sample.length === 0) {
           setSampleError("No gradeable lessons found for this day (need array transcripts with ≥4 turns).");
           return;
@@ -351,6 +488,20 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
           To
           <input className="filter-select" type="date" value={toDate} min={fromDate} onChange={(e) => setToDate(e.target.value)} />
         </label>
+        <button
+          className="transcript-toggle transcript-toggle--eval"
+          style={{ marginLeft: "auto" }}
+          onClick={judgeRange}
+          disabled={rangeJudging || loading}
+          title="Sample and LLM-judge lessons for every day in this range, then plot the per-day tutor-quality score. Already-judged lessons are reused, not re-billed."
+        >
+          {rangeJudging
+            ? rangeProg
+              ? `Judging ${rangeProg.done}/${rangeProg.total}…`
+              : "Sampling days…"
+            : `Judge range · ${sampleSize}/day`}
+        </button>
+        {rangeError && <span className="eval-error" style={{ marginLeft: "0.5rem" }}>{rangeError}</span>}
       </div>
 
       {error && (
@@ -410,6 +561,13 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
               <div className="metric-label">Lessons</div>
               <div className="metric-description">In selected range</div>
             </div>
+            {rangeStats.judged > 0 && (
+              <div className="metric-card">
+                <div className="metric-value">{rangeStats.avg?.toFixed(1)}/10</div>
+                <div className="metric-label">Avg LLM Score</div>
+                <div className="metric-description">{rangeStats.judged.toLocaleString()} judged · {rangeStats.days} days</div>
+              </div>
+            )}
           </section>
 
           {/* Rating & volume */}
@@ -431,6 +589,34 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
               </ResponsiveContainer>
             </div>
           </div>
+
+          {/* LLM tutor-quality trend (only after judging a range/day) */}
+          {rangeStats.judged > 0 && (
+            <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+              <h3>LLM tutor-quality score per day</h3>
+              <p className="ret-chart-sub">
+                Average rubric score (1–10) of each day's LLM-judged sample ({sampleSize}/day) — an estimate; hover for how many lessons were judged.
+              </p>
+              <div style={{ width: "100%", height: 260 }}>
+                <ResponsiveContainer>
+                  <LineChart data={llmTrend} margin={{ top: 10, right: 16, bottom: 8, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={8} />
+                    <YAxis domain={[0, 10]} tick={{ fontSize: 12 }} width={36} />
+                    <Tooltip
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      formatter={(v: number | undefined) => [`${v ?? 0}/10`, "Avg LLM score"]}
+                      labelFormatter={(l) => {
+                        const row = llmTrend.find((r) => r.label === String(l));
+                        return row ? `${String(l)} · ${row.llm_n} judged` : String(l);
+                      }}
+                    />
+                    <Line type="monotone" dataKey="llm_score" name="Avg LLM score" stroke="#7c3aed" strokeWidth={2.5} dot={{ r: 2 }} connectNulls isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
 
           {/* Quality issues */}
           <div className="chart-container" style={{ marginTop: "1.25rem" }}>
