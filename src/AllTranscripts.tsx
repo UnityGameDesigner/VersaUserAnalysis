@@ -417,6 +417,23 @@ function parseExperience(
   });
 }
 
+// The onboarding "How much of the language can you speak right now?" answer,
+// surfaced as its own at-a-glance meter (level 1–4 → filled segments + colour)
+// rather than buried among the other assessment chips. Only the newer assessment
+// format records it (previous_experience contains an `ability:` token); returns
+// null when it's absent, so the strip simply doesn't render.
+const ABILITY_META: Record<string, { level: number; label: string; color: string; emoji: string }> = {
+  none: { level: 1, label: "Starting from zero", color: "#ef4444", emoji: "🌱" },
+  words: { level: 2, label: "A few words", color: "#f97316", emoji: "🐣" },
+  simple: { level: 3, label: "Simple conversations", color: "#84cc16", emoji: "💬" },
+  comfortable: { level: 4, label: "Comfortable — most topics", color: "#22c55e", emoji: "💪" },
+};
+function speakingAbility(prev: string | null): { level: number; label: string; color: string; emoji: string } | null {
+  if (!prev) return null;
+  const m = /ability:([a-zA-Z]+)/.exec(prev);
+  return m ? (ABILITY_META[m[1]] ?? null) : null;
+}
+
 interface UserField {
   label: string;
   display: string;
@@ -823,6 +840,30 @@ const TranscriptCard: React.FC<{
               })()}
             </div>
           </div>
+          {(() => {
+            const ab = speakingAbility(user.previous_experience);
+            if (!ab) return null;
+            return (
+              <div
+                className="speak-now"
+                title="Onboarding answer — How much of the language can you speak right now?"
+              >
+                <span className="speak-now-label">🗣️ Can speak now</span>
+                <span className="speak-now-meter" aria-label={`Level ${ab.level} of 4`}>
+                  {[1, 2, 3, 4].map((i) => (
+                    <span
+                      key={i}
+                      className="speak-now-seg"
+                      style={{ background: i <= ab.level ? ab.color : "#e5e7eb" }}
+                    />
+                  ))}
+                </span>
+                <span className="speak-now-value" style={{ color: ab.color }}>
+                  {ab.emoji} {ab.label}
+                </span>
+              </div>
+            );
+          })()}
           <div className="user-panel-grid">
             {buildUserGroups(user).map((g) => (
               <div key={g.title} className="user-group">

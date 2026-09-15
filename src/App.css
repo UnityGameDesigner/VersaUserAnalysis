@@ -2235,6 +2235,40 @@ body,
   border-top: 1px dashed #ececf1;
 }
 
+/* Prominent "how much can you speak right now" onboarding answer. */
+.speak-now {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.6rem 1rem 0;
+  padding: 0.5rem 0.8rem;
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+  border-radius: 10px;
+}
+.speak-now-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #52514e;
+}
+.speak-now-meter {
+  display: inline-flex;
+  gap: 3px;
+}
+.speak-now-seg {
+  width: 22px;
+  height: 8px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.speak-now-value {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .user-exp-row {
   display: flex;
   flex-wrap: wrap;
