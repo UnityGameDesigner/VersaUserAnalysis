@@ -89,10 +89,20 @@ interface JourneyItem {
   level: string | null;
   native: string | null;
   reason: string | null;
+  lastLesson: string; // for the continuity-over-time trend
   status: "pending" | "done" | "error";
   journey?: JourneyEvaluation;
   error?: string;
   cached?: boolean;
+}
+
+// The Monday (ISO week start) of a date, as YYYY-MM-DD — for weekly bucketing.
+function weekStart(isoDate: string): string {
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return isoDate.slice(0, 10);
+  const dow = (d.getUTCDay() + 6) % 7; // Mon=0
+  const mon = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow));
+  return mon.toISOString().slice(0, 10);
 }
 
 const RATING_COLORS = ["#ef4444", "#f97316", "#eab308", "#84cc16", "#22c55e"]; // 1★→5★
@@ -514,6 +524,7 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
           level: (r.level as string) ?? null,
           native: (r.native_language as string) ?? null,
           reason: (r.reason as string) ?? null,
+          lastLesson: String(r.last_lesson ?? ""),
           status: cached ? "done" : "pending",
           journey: cached?.evaluation,
           cached: !!cached,
@@ -599,6 +610,35 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
       notN: notc.length,
       dims: JOURNEY_DIMENSIONS.map((d) => ({ dim: d, conv: dimMean(conv, d), not: dimMean(notc, d) })),
     };
+  }, [jItems]);
+
+  // Continuity (cross-conversation coherence) pulled out on its own — the overall
+  // journey score hides it (strong progression/memory mask a low continuity).
+  // Tracked over time (by each user's last-active week) so it's watchable as fixes ship.
+  const contKey = (it: JourneyItem) => it.journey?.dimensions.find((d) => d.dimension === "Continuity")?.score;
+  const continuity = useMemo(() => {
+    const done = jItems.filter((it) => it.status === "done" && contKey(it) != null);
+    const scores = done.map((it) => contKey(it)!) as number[];
+    const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+    // Weekly trend by last-active week.
+    const byWeek = new Map<string, { sum: number; n: number }>();
+    for (const it of done) {
+      if (!it.lastLesson) continue;
+      const wk = weekStart(it.lastLesson);
+      const cur = byWeek.get(wk) ?? { sum: 0, n: 0 };
+      cur.sum += contKey(it)!;
+      cur.n += 1;
+      byWeek.set(wk, cur);
+    }
+    const trend = [...byWeek.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([wk, v]) => ({
+        wk,
+        label: format(new Date(wk + "T00:00:00"), "MMM d"),
+        score: Math.round((v.sum / v.n) * 10) / 10,
+        n: v.n,
+      }));
+    return { avg, n: scores.length, trend };
   }, [jItems]);
 
   return (
@@ -995,6 +1035,46 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
                 <div className="metric-description">of {jItems.length} sampled</div>
               </div>
             </section>
+
+            {/* Continuity pulled out — the coherence signal the overall score hides */}
+            {continuity.avg != null && (
+              <div className="chart-container" style={{ marginTop: "1.25rem", borderLeft: "3px solid #7c3aed" }}>
+                <div className="ret-chart-head" style={{ alignItems: "baseline" }}>
+                  <h3 style={{ margin: 0 }}>
+                    Continuity (cross-conversation coherence):{" "}
+                    <span style={{ color: continuity.avg >= 7 ? "#16a34a" : continuity.avg >= 5 ? "#d97706" : "#dc2626" }}>
+                      {continuity.avg.toFixed(1)}/10
+                    </span>
+                  </h3>
+                </div>
+                <p className="ret-chart-sub" style={{ maxWidth: "82ch" }}>
+                  Does the tutor build a thread across sessions vs reset every time (repeated openers, re-introductions,
+                  forgetting prior context). This is isolated on purpose — a low continuity is <strong>masked</strong> in the
+                  overall journey score when progression/memory are strong. Watch this number as coherence fixes ship
+                  (re-run the cohort to refresh). Each week's point is a small sample — read the level, not the wiggles.
+                </p>
+                {continuity.trend.length > 1 && (
+                  <div style={{ width: "100%", height: 220 }}>
+                    <ResponsiveContainer>
+                      <LineChart data={continuity.trend} margin={{ top: 10, right: 16, bottom: 8, left: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
+                        <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                        <YAxis domain={[0, 10]} tick={{ fontSize: 12 }} width={30} />
+                        <Tooltip
+                          contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                          formatter={(v: number | undefined) => [`${v ?? 0}/10`, "Avg continuity"]}
+                          labelFormatter={(l) => {
+                            const row = continuity.trend.find((r) => r.label === String(l));
+                            return row ? `Week of ${String(l)} · ${row.n} user${row.n === 1 ? "" : "s"}` : String(l);
+                          }}
+                        />
+                        <Line type="monotone" dataKey="score" name="Avg continuity" stroke="#7c3aed" strokeWidth={2.5} dot={{ r: 3 }} connectNulls isAnimationActive={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="table-container" style={{ marginTop: "1rem" }}>
               <table className="data-table">
