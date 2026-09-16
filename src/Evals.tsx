@@ -18,6 +18,13 @@ import { supabase } from "./lib/supabase";
 import { evaluateTutor, scoreVariant, type TutorEvaluation } from "./lib/evaluateTutor";
 import { parseTranscript } from "./lib/lessonMetrics";
 import { getSavedEvaluation, saveEvaluation, getAllEvaluations, type SavedEvaluation } from "./lib/evalStore";
+import {
+  evaluateJourney,
+  JOURNEY_DIMENSIONS,
+  type JourneyEvaluation,
+  type JourneyLesson,
+} from "./lib/evaluateJourney";
+import { getSavedJourney, saveJourney } from "./lib/journeyStore";
 import TutorEvalPanel from "./TutorEvalPanel";
 import { Conversation } from "./Feedback";
 
@@ -70,6 +77,22 @@ interface JudgedItem {
   evaluation?: TutorEvaluation;
   error?: string;
   cached?: boolean; // loaded from a prior judgement (not re-billed)
+}
+
+// One engaged user in the Learning Journey cohort run.
+interface JourneyItem {
+  userId: string;
+  name: string | null;
+  lessons: number;
+  converted: boolean;
+  learning: string | null;
+  level: string | null;
+  native: string | null;
+  reason: string | null;
+  status: "pending" | "done" | "error";
+  journey?: JourneyEvaluation;
+  error?: string;
+  cached?: boolean;
 }
 
 const RATING_COLORS = ["#ef4444", "#f97316", "#eab308", "#84cc16", "#22c55e"]; // 1★→5★
@@ -458,6 +481,126 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
     };
   }, [items]);
 
+  // ── Learning Journey cohort — does the journey score separate converters? ──────
+  const [jMinLessons, setJMinLessons] = useState(5);
+  const [jSample, setJSample] = useState(20);
+  const [jItems, setJItems] = useState<JourneyItem[]>([]);
+  const [jRunning, setJRunning] = useState(false);
+  const [jProg, setJProg] = useState<{ done: number; total: number } | null>(null);
+  const [jError, setJError] = useState<string | null>(null);
+
+  const runJourneyCohort = useCallback(async () => {
+    if (jRunning) return;
+    setJRunning(true);
+    setJError(null);
+    setJProg(null);
+    setJItems([]);
+    try {
+      const { data, error } = await supabase.rpc("engaged_users", {
+        min_lessons: jMinLessons,
+        since_days: 45,
+        max_rows: jSample,
+      });
+      if (error) throw new Error(error.message);
+      const items: JourneyItem[] = ((data ?? []) as Record<string, unknown>[]).map((r) => {
+        const userId = String(r.user_id);
+        const cached = getSavedJourney(userId);
+        return {
+          userId,
+          name: (r.preferred_name as string) ?? null,
+          lessons: Number(r.lessons ?? 0),
+          converted: r.became_active_at != null,
+          learning: (r.learning_language as string) ?? null,
+          level: (r.level as string) ?? null,
+          native: (r.native_language as string) ?? null,
+          reason: (r.reason as string) ?? null,
+          status: cached ? "done" : "pending",
+          journey: cached?.evaluation,
+          cached: !!cached,
+        };
+      });
+      setJItems(items);
+      const pending = items.map((it, i) => ({ it, i })).filter((x) => x.it.status === "pending");
+      let done = 0;
+      setJProg({ done: 0, total: pending.length });
+      let next = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const k = next++;
+          if (k >= pending.length) return;
+          const idx = pending[k].i;
+          const it = items[idx];
+          try {
+            const { data: ld, error: le } = await supabase.rpc("user_lesson_journey", {
+              p_user_id: it.userId,
+              max_lessons: 20,
+            });
+            if (le) throw new Error(le.message);
+            const lessons: JourneyLesson[] = ((ld ?? []) as Record<string, unknown>[])
+              .map((r) => ({
+                date: String(r.created_at),
+                turns: Number(r.turns ?? 0),
+                rating: r.user_rating_feedback == null ? null : Number(r.user_rating_feedback),
+                endedEarly: Boolean(r.ended_early),
+                messages: parseTranscript(r.conversation_transcript),
+              }))
+              .filter((l) => l.messages.length > 0);
+            if (lessons.length < 3) {
+              setJItems((prev) => prev.map((x, i) => (i === idx ? { ...x, status: "error", error: "too few gradeable lessons" } : x)));
+            } else {
+              const jev = await evaluateJourney(lessons, {
+                name: it.name,
+                learningLanguage: it.learning,
+                level: it.level,
+                nativeLanguage: it.native,
+                reason: it.reason,
+              });
+              saveJourney({
+                userId: it.userId,
+                evaluatedAt: new Date().toISOString(),
+                lessonCount: lessons.length,
+                userName: it.name,
+                converted: it.converted,
+                evaluation: jev,
+              });
+              setJItems((prev) => prev.map((x, i) => (i === idx ? { ...x, status: "done", journey: jev } : x)));
+            }
+          } catch (e) {
+            setJItems((prev) => prev.map((x, i) => (i === idx ? { ...x, status: "error", error: e instanceof Error ? e.message : String(e) } : x)));
+          }
+          done += 1;
+          setJProg({ done, total: pending.length });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, pending.length || 1) }, worker));
+    } catch (e) {
+      setJError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setJRunning(false);
+    }
+  }, [jRunning, jMinLessons, jSample]);
+
+  const jStats = useMemo(() => {
+    const done = jItems.filter((it) => it.status === "done" && it.journey);
+    const conv = done.filter((it) => it.converted);
+    const notc = done.filter((it) => !it.converted);
+    const mean = (xs: JourneyItem[]) => (xs.length ? xs.reduce((a, it) => a + it.journey!.overall_score, 0) / xs.length : null);
+    const dimMean = (xs: JourneyItem[], dim: string) => {
+      const vals = xs
+        .map((it) => it.journey!.dimensions.find((d) => d.dimension === dim)?.score)
+        .filter((v): v is number => typeof v === "number");
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
+    return {
+      done: done.length,
+      convAvg: mean(conv),
+      notAvg: mean(notc),
+      convN: conv.length,
+      notN: notc.length,
+      dims: JOURNEY_DIMENSIONS.map((d) => ({ dim: d, conv: dimMean(conv, d), not: dimMean(notc, d) })),
+    };
+  }, [jItems]);
+
   return (
     <div className="lessons-detail" style={{ padding: "1.5rem" }}>
       <h2 className="lessons-detail-title" style={{ margin: 0 }}>
@@ -787,6 +930,144 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
             <SampleCard key={it.row.id} item={it} onUserClick={onUserClick} />
           ))}
         </div>
+      </div>
+
+      {/* ── Learning Journey cohort: does journey quality track conversion? ────── */}
+      <div className="chart-container" style={{ marginTop: "2rem" }}>
+        <div className="ret-chart-head">
+          <h3>Learning Journey cohort</h3>
+        </div>
+        <p className="ret-chart-sub" style={{ maxWidth: "82ch" }}>
+          Long-horizon tutor eval across each engaged learner's whole lesson relationship, then split by outcome —
+          the test of whether journey quality actually tracks conversion. Only engaged users qualify (most do ~1 lesson),
+          so this is a small sample. Each user is judged once and cached (shared with the profile panel). One LLM call per uncached user.
+        </p>
+        <div className="controls-bar" style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+          <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+            Min lessons
+            <input
+              className="filter-select"
+              type="number"
+              min={3}
+              max={50}
+              value={jMinLessons}
+              onChange={(e) => setJMinLessons(Math.max(3, Number(e.target.value) || 3))}
+              style={{ width: "4.5rem" }}
+            />
+          </label>
+          <div className="ret-seg" role="group" aria-label="Cohort size">
+            {[10, 20, 30].map((n) => (
+              <button key={n} className={`ret-seg-btn${jSample === n ? " ret-seg-btn--on" : ""}`} onClick={() => setJSample(n)}>
+                {n}
+              </button>
+            ))}
+          </div>
+          <button className="transcript-toggle transcript-toggle--eval" onClick={runJourneyCohort} disabled={jRunning}>
+            {jRunning ? (jProg ? `Judging ${jProg.done}/${jProg.total}…` : "Sampling users…") : `Run cohort · ${jSample} users`}
+          </button>
+        </div>
+
+        {jError && <div className="eval-error">{jError}</div>}
+
+        {jStats.done > 0 && (
+          <>
+            <section className="metrics-grid" style={{ marginTop: "0.5rem", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+              <div className="metric-card">
+                <div className="metric-value" style={{ color: "#16a34a" }}>{jStats.convAvg != null ? `${jStats.convAvg.toFixed(1)}/10` : "—"}</div>
+                <div className="metric-label">Converters</div>
+                <div className="metric-description">{jStats.convN} users · avg journey score</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value" style={{ color: "#dc2626" }}>{jStats.notAvg != null ? `${jStats.notAvg.toFixed(1)}/10` : "—"}</div>
+                <div className="metric-label">Non-converters</div>
+                <div className="metric-description">{jStats.notN} users · avg journey score</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">
+                  {jStats.convAvg != null && jStats.notAvg != null ? `${(jStats.convAvg - jStats.notAvg >= 0 ? "+" : "")}${(jStats.convAvg - jStats.notAvg).toFixed(1)}` : "—"}
+                </div>
+                <div className="metric-label">Gap</div>
+                <div className="metric-description">converter − non-converter</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{jStats.done}</div>
+                <div className="metric-label">Judged</div>
+                <div className="metric-description">of {jItems.length} sampled</div>
+              </div>
+            </section>
+
+            <div className="table-container" style={{ marginTop: "1rem" }}>
+              <table className="data-table">
+                <thead className="table-head">
+                  <tr>
+                    <th>Dimension</th>
+                    <th title="Average among converters">Converters</th>
+                    <th title="Average among non-converters">Non-converters</th>
+                    <th>Gap</th>
+                  </tr>
+                </thead>
+                <tbody className="table-body">
+                  {jStats.dims.map((d) => (
+                    <tr key={d.dim}>
+                      <td>{d.dim}</td>
+                      <td>{d.conv != null ? d.conv.toFixed(1) : "—"}</td>
+                      <td>{d.not != null ? d.not.toFixed(1) : "—"}</td>
+                      <td style={{ color: d.conv != null && d.not != null ? (d.conv - d.not >= 0 ? "#16a34a" : "#dc2626") : undefined }}>
+                        {d.conv != null && d.not != null ? `${d.conv - d.not >= 0 ? "+" : ""}${(d.conv - d.not).toFixed(1)}` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {jItems.length > 0 && (
+          <div className="table-container" style={{ marginTop: "1rem" }}>
+            <table className="data-table">
+              <thead className="table-head">
+                <tr>
+                  <th>User</th>
+                  <th>Lessons</th>
+                  <th>Outcome</th>
+                  <th>Journey</th>
+                  {JOURNEY_DIMENSIONS.map((d) => (
+                    <th key={d} title={d}>{d.split(" ")[0]}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="table-body">
+                {jItems.map((it) => {
+                  const dimScore = (dim: string) => it.journey?.dimensions.find((d) => d.dimension === dim)?.score;
+                  return (
+                    <tr key={it.userId}>
+                      <td>
+                        <a href={`#user-lookup:${it.userId}`} target="_blank" rel="noopener noreferrer" style={{ color: "#4f46e5", textDecoration: "none", fontWeight: 500 }}>
+                          {it.name?.trim() || it.userId.slice(0, 8) + "…"} ↗
+                        </a>
+                      </td>
+                      <td>{it.lessons}</td>
+                      <td>
+                        <span className={`user-trial-badge user-trial-badge--${it.converted ? "converted" : "churned"}`}>
+                          {it.converted ? "Converted" : "Not converted"}
+                        </span>
+                      </td>
+                      <td>
+                        {it.status === "pending" ? "…" : it.status === "error" ? <span title={it.error} style={{ color: "#b42318" }}>err</span> : it.journey ? (
+                          <span className={`eval-score eval-score--${scoreVariant(it.journey.overall_score)}`}>{it.journey.overall_score}</span>
+                        ) : "—"}
+                      </td>
+                      {JOURNEY_DIMENSIONS.map((d) => (
+                        <td key={d}>{dimScore(d) ?? "—"}</td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
