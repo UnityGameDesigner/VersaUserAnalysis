@@ -641,6 +641,48 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
     return { avg, n: scores.length, trend };
   }, [jItems]);
 
+  // ── Automated (nightly) persisted eval trends — from scripts/eval-jobs.mjs ────
+  const [autoDaily, setAutoDaily] = useState<{ d: string; label: string; avg: number; n: number }[]>([]);
+  const [autoWeekly, setAutoWeekly] = useState<{ week: string; label: string; continuity: number; overall: number; n: number }[]>([]);
+  const [autoSummary, setAutoSummary] = useState<{ converted: boolean; n: number; overall: number; continuity: number }[]>([]);
+  const [autoLoading, setAutoLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setAutoLoading(true);
+      const [d, w, s] = await Promise.all([
+        supabase.rpc("lesson_eval_daily", { start_date: applied.from || null, end_date: applied.to || null }),
+        supabase.rpc("journey_eval_weekly"),
+        supabase.rpc("journey_eval_summary"),
+      ]);
+      if (cancelled) return;
+      setAutoDaily(((d.data ?? []) as Record<string, unknown>[]).map((r) => ({
+        d: String(r.d),
+        label: format(new Date(String(r.d) + "T00:00:00"), "MMM d"),
+        avg: Number(r.avg_overall ?? 0),
+        n: Number(r.n ?? 0),
+      })));
+      setAutoWeekly(((w.data ?? []) as Record<string, unknown>[]).map((r) => ({
+        week: String(r.week),
+        label: format(new Date(String(r.week) + "T00:00:00"), "MMM d"),
+        continuity: Number(r.avg_continuity ?? 0),
+        overall: Number(r.avg_overall ?? 0),
+        n: Number(r.n ?? 0),
+      })));
+      setAutoSummary(((s.data ?? []) as Record<string, unknown>[]).map((r) => ({
+        converted: !!r.converted,
+        n: Number(r.n ?? 0),
+        overall: Number(r.avg_overall ?? 0),
+        continuity: Number(r.avg_continuity ?? 0),
+      })));
+      setAutoLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applied]);
+
   return (
     <div className="lessons-detail" style={{ padding: "1.5rem" }}>
       <h2 className="lessons-detail-title" style={{ margin: 0 }}>
@@ -911,6 +953,87 @@ const Evals: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserCli
           </div>
         </>
       )}
+
+      {/* ── Automated (nightly) persisted trends ──────────────────────────────── */}
+      <div className="chart-container" style={{ marginTop: "2rem", borderLeft: "3px solid #059669" }}>
+        <div className="ret-chart-head"><h3>Automated judge trends (nightly)</h3></div>
+        <p className="ret-chart-sub" style={{ maxWidth: "84ch" }}>
+          Persisted results from the daily job (<code>scripts/eval-jobs.mjs</code>) — no clicking required. Each night it
+          LearnLM-judges a random sample of that day's lessons and refreshes the engaged-user Learning Journeys, writing to
+          Supabase so these trends fill in on their own. Backfilled over the last 2 weeks.
+        </p>
+        {autoLoading ? (
+          <div style={{ textAlign: "center", padding: "1.5rem" }}><div className="loading-spinner"></div></div>
+        ) : autoDaily.length === 0 && autoWeekly.length === 0 ? (
+          <div className="empty-state" style={{ padding: "1rem" }}>
+            No automated evals yet — run <code>node --env-file=.env scripts/eval-jobs.mjs backfill 14</code>.
+          </div>
+        ) : (
+          <>
+            {autoDaily.length > 0 && (
+              <>
+                <p className="ret-chart-sub" style={{ marginTop: "0.5rem", marginBottom: "0.3rem" }}>
+                  <strong>Daily tutor quality</strong> — LearnLM overall 1–10 of that day's random sample ({autoDaily.reduce((a, r) => a + r.n, 0)} lessons judged in range).
+                </p>
+                <div style={{ width: "100%", height: 240 }}>
+                  <ResponsiveContainer>
+                    <LineChart data={autoDaily} margin={{ top: 10, right: 16, bottom: 8, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
+                      <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={8} />
+                      <YAxis domain={[0, 10]} tick={{ fontSize: 12 }} width={30} />
+                      <Tooltip
+                        contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                        formatter={(v: number | undefined) => [`${v ?? 0}/10`, "Avg LearnLM"]}
+                        labelFormatter={(l) => { const row = autoDaily.find((r) => r.label === String(l)); return row ? `${String(l)} · ${row.n} judged` : String(l); }}
+                      />
+                      <Line type="monotone" dataKey="avg" name="Avg LearnLM" stroke="#059669" strokeWidth={2.5} dot={{ r: 2 }} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )}
+            {autoWeekly.length > 0 && (
+              <>
+                <p className="ret-chart-sub" style={{ marginTop: "1rem", marginBottom: "0.3rem" }}>
+                  <strong>Journey scores by week</strong> — long-horizon overall vs <span style={{ color: "#7c3aed" }}>continuity (coherence)</span>, by each judged user's last-active week.
+                </p>
+                <div style={{ width: "100%", height: 240 }}>
+                  <ResponsiveContainer>
+                    <LineChart data={autoWeekly} margin={{ top: 10, right: 16, bottom: 8, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
+                      <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                      <YAxis domain={[0, 10]} tick={{ fontSize: 12 }} width={30} />
+                      <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} formatter={(v: number | undefined, n) => [`${v ?? 0}/10`, n]} />
+                      <Legend />
+                      <Line type="monotone" dataKey="overall" name="Overall" stroke="#4f46e5" strokeWidth={2.5} dot={{ r: 2 }} isAnimationActive={false} />
+                      <Line type="monotone" dataKey="continuity" name="Continuity" stroke="#7c3aed" strokeWidth={2.5} strokeDasharray="4 3" dot={{ r: 2 }} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )}
+            {autoSummary.length > 0 && (
+              <div className="table-container" style={{ marginTop: "1rem" }}>
+                <table className="data-table">
+                  <thead className="table-head">
+                    <tr><th>Outcome</th><th>Users</th><th>Avg journey</th><th>Avg continuity</th></tr>
+                  </thead>
+                  <tbody className="table-body">
+                    {[...autoSummary].sort((a, b) => Number(b.converted) - Number(a.converted)).map((r) => (
+                      <tr key={String(r.converted)}>
+                        <td>{r.converted ? "Converted" : "Not converted"}</td>
+                        <td>{r.n}</td>
+                        <td>{r.overall.toFixed(1)}</td>
+                        <td>{r.continuity.toFixed(1)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       {/* ── LLM-judged sample ─────────────────────────────────────────────────── */}
       <div ref={sampleRef} className="chart-container" style={{ marginTop: "2rem" }}>

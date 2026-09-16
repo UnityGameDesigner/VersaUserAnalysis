@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Runs the daily eval job (yesterday's lesson sample + Learning Journeys) every day
+  at 06:00 local time. Uses a login shell so nvm/homebrew node is on PATH.
+
+  Install:
+    cp scripts/com.versa.evals-daily.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.versa.evals-daily.plist
+  Remove:
+    launchctl unload ~/Library/LaunchAgents/com.versa.evals-daily.plist
+  Run once now (test):
+    launchctl start com.versa.evals-daily
+  Logs: /tmp/versa-evals-daily.log
+
+  NOTE: only fires while the Mac is awake. For laptop-independent scheduling, move
+  the job to a Supabase Edge Function on pg_cron (ask Claude to set that up).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.versa.evals-daily</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/adityabora/Versa/DynaFront/VersaUserAnalysis &amp;&amp; node --env-file=.env scripts/eval-jobs.mjs daily &gt;&gt; /tmp/versa-evals-daily.log 2&gt;&amp;1</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>6</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

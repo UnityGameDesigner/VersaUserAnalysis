@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "evals:daily": "node --env-file=.env scripts/eval-jobs.mjs daily",
+    "evals:backfill": "node --env-file=.env scripts/eval-jobs.mjs backfill 14"
   },
   "dependencies": {
     "@google/genai": "^2.8.0",
