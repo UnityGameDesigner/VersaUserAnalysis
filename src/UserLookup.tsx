@@ -28,6 +28,7 @@ import { fetchInterests, prettyInterest } from "./lib/interests";
 import { chatAboutUser, type ChatMessage } from "./lib/userChat";
 import { analyzeCancellation, reasonMeta, type CancelAnalysis } from "./lib/analyzeCancellation";
 import { getCancelAnalysis, saveCancelAnalysis } from "./lib/cancelAnalysisStore";
+import LearningJourneyPanel from "./LearningJourneyPanel";
 import { format } from "date-fns";
 
 interface UserInfo {
@@ -1450,6 +1451,22 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
               skills={skills}
               interests={interests}
             />
+
+            {/* Long-horizon tutor eval across the whole lesson relationship */}
+            {lessons.length >= 3 && (
+              <LearningJourneyPanel
+                userId={user.user_id}
+                lessonCount={lessons.length}
+                converted={!!user.became_active_at}
+                context={{
+                  name: user.preferred_name,
+                  learningLanguage: user.learning_language,
+                  nativeLanguage: user.native_language,
+                  level: user.level,
+                  reason: user.reason,
+                }}
+              />
+            )}
 
             {/* When the trial should have converted + inferred outcome */}
             <ExpectedConversionRow user={user} lessons={lessons} />
