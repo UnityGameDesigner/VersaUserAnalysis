@@ -15,6 +15,7 @@ import CancelledTrials from "./CancelledTrials";
 import TutorComparison from "./TutorComparison";
 import TrialRetention from "./TrialRetention";
 import TrialConversion from "./TrialConversion";
+import ConversionModel from "./ConversionModel";
 import CancelReasons from "./CancelReasons";
 import { loadSavedProfiles } from "./lib/savedProfilesStore";
 
@@ -23,12 +24,12 @@ interface NavState {
   lookupUserId: string | null;
 }
 
-type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "evals" | "feedback" | "retention" | "trial-retention" | "trial-conversion" | "cancelled-trials" | "cancel-reasons" | "tutor-comparison" | "user-lookup" | "ab-compare";
+type Tab = "dashboard" | "recent" | "lessons" | "transcripts" | "saved" | "evaluations" | "evals" | "feedback" | "retention" | "trial-retention" | "trial-conversion" | "conversion-model" | "cancelled-trials" | "cancel-reasons" | "tutor-comparison" | "user-lookup" | "ab-compare";
 
 function stateFromHash(): NavState {
   const hash = window.location.hash.replace("#", "");
   const [tab, userId] = hash.split(":");
-  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "evals", "feedback", "retention", "trial-retention", "trial-conversion", "cancelled-trials", "cancel-reasons", "tutor-comparison", "user-lookup", "ab-compare"];
+  const validTabs: Tab[] = ["dashboard", "recent", "lessons", "transcripts", "saved", "evaluations", "evals", "feedback", "retention", "trial-retention", "trial-conversion", "conversion-model", "cancelled-trials", "cancel-reasons", "tutor-comparison", "user-lookup", "ab-compare"];
   return {
     tab: validTabs.includes(tab as Tab) ? (tab as Tab) : "dashboard",
     lookupUserId: userId || null,
@@ -161,6 +162,12 @@ const App: React.FC = () => {
             Trial Conversion
           </button>
           <button
+            className={`sidebar-nav-btn${activeTab === "conversion-model" ? " sidebar-nav-btn--active" : ""}`}
+            onClick={() => navigate("conversion-model")}
+          >
+            Conversion Model
+          </button>
+          <button
             className={`sidebar-nav-btn${activeTab === "cancelled-trials" ? " sidebar-nav-btn--active" : ""}`}
             onClick={() => navigate("cancelled-trials")}
           >
@@ -248,6 +255,12 @@ const App: React.FC = () => {
           <div className="dashboard-container">
             <div className="dashboard-inner">
               <TrialConversion />
+            </div>
+          </div>
+        ) : activeTab === "conversion-model" ? (
+          <div className="dashboard-container">
+            <div className="dashboard-inner">
+              <ConversionModel />
             </div>
           </div>
         ) : activeTab === "cancelled-trials" ? (

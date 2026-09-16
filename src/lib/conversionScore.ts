@@ -30,15 +30,23 @@ type CategoricalSpec = {
 };
 
 const CARD = scorecard as unknown as {
+  model: string;
   intercept: number;
   numeric: NumericSpec[];
   categorical: CategoricalSpec[];
   tiers: { high: number; medium: number };
   cv_auc: number;
   base_rate: number;
+  base_rate_all: number;
+  trained_rows: number;
+  trained_at: string;
+  tier_conv_recent: { high: number; medium: number; low: number };
 };
 
 export const CONV_MODEL_AUC = CARD.cv_auc;
+// The full parsed scorecard, exposed for the Conversion Model explainer page.
+export const CONV_SCORECARD = CARD;
+export type { NumericSpec, CategoricalSpec };
 
 // Shared tier metadata (labels/variants/hints) for the likelihood pill + filter,
 // used by both All Transcripts and User Lookup. Recent-regime rates (last 120d,
@@ -100,4 +108,56 @@ export function scoreConversion(
   const tier: ConvTier =
     prob >= CARD.tiers.high ? "high" : prob >= CARD.tiers.medium ? "medium" : "low";
   return { prob, tier };
+}
+
+// Per-factor breakdown of a single prediction, in log-odds contributions (the
+// scorecard is additive in log-odds: sum of contributions + intercept → logit →
+// probability). Powers the interactive scorer on the Conversion Model page.
+export interface ConversionTerm {
+  feature: string;
+  value: string; // the resolved category / numeric value used
+  contribution: number; // log-odds added to the score (positive = more likely)
+  kind: "numeric" | "categorical";
+}
+export interface ConversionExplanation extends ConversionScore {
+  intercept: number;
+  logit: number;
+  terms: ConversionTerm[];
+}
+
+export function explainConversion(
+  meta: Record<string, unknown> | null | undefined,
+): ConversionExplanation | null {
+  if (!meta) return null;
+  const terms: ConversionTerm[] = [];
+  let z = CARD.intercept;
+
+  for (const n of CARD.numeric) {
+    const raw = meta[n.name];
+    const num = raw == null || raw === "" ? NaN : Number(raw);
+    const missing = Number.isNaN(num);
+    const val = missing ? n.median : num;
+    const contribution = n.coef * ((val - n.mean) / n.scale);
+    z += contribution;
+    terms.push({
+      feature: n.name,
+      value: missing ? `${n.median} (median, imputed)` : String(val),
+      contribution,
+      kind: "numeric",
+    });
+  }
+
+  for (const c of CARD.categorical) {
+    const v = catValue(meta[c.name]);
+    let contribution = 0;
+    if (Object.prototype.hasOwnProperty.call(c.coefs, v)) contribution = c.coefs[v];
+    else if (c.infrequent_values.includes(v)) contribution = c.infrequent_coef;
+    z += contribution;
+    terms.push({ feature: c.name, value: v, contribution, kind: "categorical" });
+  }
+
+  const prob = 1 / (1 + Math.exp(-z));
+  const tier: ConvTier =
+    prob >= CARD.tiers.high ? "high" : prob >= CARD.tiers.medium ? "medium" : "low";
+  return { prob, tier, intercept: CARD.intercept, logit: z, terms };
 }
