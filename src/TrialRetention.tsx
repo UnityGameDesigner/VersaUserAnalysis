@@ -243,6 +243,17 @@ function convRank(u: DayUser): number {
 // One trial starter row from trial_day_users_range (a DayUser + its trial-start day).
 type TrialUserRow = DayUser & { trial_day: string };
 
+// One billing-issue row from trial_billing_issues.
+interface BillingRow {
+  trial_day: string;
+  past_due_day: string;
+  days_since: number;
+  converted: boolean;
+  platform: string | null;
+  payment_status: string | null;
+  canceled_from: string | null;
+}
+
 function ageGroup(age: string | null): string {
   const n = parseInt((age ?? "").trim(), 10);
   if (!Number.isFinite(n) || n <= 0) return "Unknown";
@@ -273,7 +284,7 @@ const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
   // timeframe); "trend" = the metric over time (cohort line); "recent" = a
   // per-day breakdown of the last N days (trial cohort engagement, no min-size).
-  const [chartType, setChartType] = useState<"bars" | "trend" | "recent">("bars");
+  const [chartType, setChartType] = useState<"bars" | "trend" | "recent" | "billing">("bars");
   const [windowDays, setWindowDays] = useState(7); // default = the 7-day trial length
   const [gran, setGran] = useState<Gran>("month");
   const [metric, setMetric] = useState<Metric>("return");
@@ -308,6 +319,10 @@ const TrialRetention: React.FC = () => {
   // Segment filter: which parameter, and which value ("" = all of that parameter).
   const [segParam, setSegParam] = useState<string>("all");
   const [segValue, setSegValue] = useState<string>("");
+  // "Billing issues" view: trial users whose trial-end/renewal charge failed (PAST_DUE).
+  const [billingRows, setBillingRows] = useState<BillingRow[]>([]);
+  const [billingLoading, setBillingLoading] = useState(false);
+  const [billingError, setBillingError] = useState<string | null>(null);
 
   // Debounce the window input; granularity applies immediately.
   useEffect(() => {
@@ -417,6 +432,74 @@ const TrialRetention: React.FC = () => {
   }, [appliedRange, chartType, segParam, segValue]);
 
   const effReachN = Math.min(Math.max(2, Math.round(reachN) || 2), applied.window);
+
+  // ── Billing issues view: when trial charges fail ─────────────────────────────
+  // Fetch when the Billing view is active; filter by trial-start date (the page Timeline).
+  useEffect(() => {
+    if (chartType !== "billing") return;
+    let cancelled = false;
+    (async () => {
+      setBillingLoading(true);
+      setBillingError(null);
+      const { data, error } = await supabase.rpc("trial_billing_issues", {
+        start_date: fromDate || null,
+        end_date: toDate || null,
+      });
+      if (cancelled) return;
+      if (error) {
+        setBillingError(error.message);
+        setBillingRows([]);
+      } else {
+        setBillingRows(
+          ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+            trial_day: String(r.trial_day),
+            past_due_day: String(r.past_due_day),
+            days_since: Number(r.days_since ?? 0),
+            converted: Boolean(r.converted),
+            platform: (r.platform as string) ?? null,
+            payment_status: (r.payment_status as string) ?? null,
+            canceled_from: (r.canceled_from as string) ?? null,
+          })),
+        );
+      }
+      setBillingLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chartType, fromDate, toDate]);
+
+  // Days-from-trial-start distribution (capped at 15 = "15+"), for the "when in the
+  // trial" histogram — the trial-end charge lands on day 7-8.
+  const billingDays = useMemo(() => {
+    const counts = new Array(16).fill(0);
+    for (const r of billingRows) counts[Math.min(15, Math.max(0, r.days_since))] += 1;
+    return counts.map((n, day) => ({ day, label: day === 15 ? "15+" : `d${day}`, n }));
+  }, [billingRows]);
+
+  // Billing issues by the calendar week they occurred (when on the clock).
+  const billingWeekly = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of billingRows) {
+      const d = new Date(r.past_due_day + "T00:00:00");
+      if (Number.isNaN(d.getTime())) continue;
+      const dow = (d.getUTCDay() + 6) % 7;
+      const mon = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow));
+      const wk = mon.toISOString().slice(0, 10);
+      m.set(wk, (m.get(wk) ?? 0) + 1);
+    }
+    return [...m.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([wk, n]) => ({ wk, label: format(new Date(wk + "T00:00:00"), "MMM d"), n }));
+  }, [billingRows]);
+
+  const billingSummary = useMemo(() => {
+    const total = billingRows.length;
+    const day78 = billingRows.filter((r) => r.days_since === 7 || r.days_since === 8).length;
+    const days = billingRows.map((r) => r.days_since).sort((a, b) => a - b);
+    const median = days.length ? (days.length % 2 ? days[(days.length - 1) / 2] : (days[days.length / 2 - 1] + days[days.length / 2]) / 2) : 0;
+    return { total, day78, pctDay78: total ? Math.round((100 * day78) / total) : 0, median };
+  }, [billingRows]);
 
   // ── Per-day segmentation + client-side aggregation ───────────────────────────
   // Distinct values for the chosen segment parameter (with counts), for the dropdown.
@@ -572,6 +655,7 @@ const TrialRetention: React.FC = () => {
   const trendDir = summary && summary.delta > 0.01 ? "up" : summary && summary.delta < -0.01 ? "down" : "flat";
   const isBars = chartType === "bars";
   const isRecent = chartType === "recent";
+  const isBilling = chartType === "billing";
   const anchorNoun = isTrial ? "trial start" : "first lesson";
 
   // Per-day view derived data. Each row also gets b0..b7 = # users with EXACTLY
@@ -647,7 +731,7 @@ const TrialRetention: React.FC = () => {
   );
   const sortThStyle: React.CSSProperties = { cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" };
 
-  const headCount = isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
+  const headCount = isBilling ? billingSummary.total : isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
 
   return (
     <div className="lessons-detail" style={{ padding: "1.5rem" }}>
@@ -655,8 +739,8 @@ const TrialRetention: React.FC = () => {
         Trial Retention
         {headCount > 0 && (
           <span className="lessons-detail-count">
-            {headCount.toLocaleString()} {isRecent ? "trials" : popNoun}
-            {isRecent ? ` · ${rangeLabel}` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
+            {headCount.toLocaleString()} {isBilling ? "billing issues" : isRecent ? "trials" : popNoun}
+            {isBilling ? "" : isRecent ? ` · ${rangeLabel}` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
           </span>
         )}
       </h2>
@@ -666,6 +750,13 @@ const TrialRetention: React.FC = () => {
             For each <strong>day</strong> in {rangeLabel}, the users who <strong>started a trial</strong> that day,
             split into <strong>non-overlapping groups by exactly how many distinct days they were active</strong> (0–7)
             in their 7-day trial window. Days in the last week are still in progress (<em>partial</em>).
+          </>
+        ) : isBilling ? (
+          <>
+            <strong>When trial users hit a billing issue</strong> — i.e. the trial-end (or later renewal) charge{" "}
+            <strong>failed</strong> (PAST_DUE, from <code>user_info.past_due_at</code>). Shown two ways: how many{" "}
+            <strong>days after their trial start</strong> it happened (the charge lands on day 7–8), and when it happened on
+            the calendar. Filter cohorts with the Timeline range below.
           </>
         ) : (
           <>
@@ -714,6 +805,13 @@ const TrialRetention: React.FC = () => {
             title="Per-day breakdown of the last N days — each day's trial cohort and how many days they were active"
           >
             Per day
+          </button>
+          <button
+            className={`ret-seg-btn${chartType === "billing" ? " ret-seg-btn--on" : ""}`}
+            onClick={() => setChartType("billing")}
+            title="When trial users hit a billing issue (the trial-end / renewal charge failed)"
+          >
+            Billing issues
           </button>
         </div>
 
@@ -787,7 +885,7 @@ const TrialRetention: React.FC = () => {
               </button>
             )}
           </>
-        ) : (
+        ) : isBilling ? null : (
           <>
             <div className="ret-seg" role="group" aria-label="Population">
               <button
@@ -915,7 +1013,91 @@ const TrialRetention: React.FC = () => {
         </div>
       )}
 
-      {isRecent ? (
+      {isBilling ? (
+        billingLoading ? (
+          <div style={{ textAlign: "center", padding: "3rem" }}>
+            <div className="loading-spinner"></div>
+            <p className="loading-text">Loading billing issues…</p>
+          </div>
+        ) : billingError ? (
+          <div className="error-box" style={{ margin: "1rem 0" }}><p>Failed to load: {billingError}</p></div>
+        ) : billingRows.length === 0 ? (
+          <div className="empty-state" style={{ padding: "2rem" }}>No billing issues in the selected timeline.</div>
+        ) : (
+          <>
+            <section className="metrics-grid" style={{ marginTop: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
+              <div className="metric-card">
+                <div className="metric-value">{billingSummary.total.toLocaleString()}</div>
+                <div className="metric-label">Billing Issues</div>
+                <div className="metric-description">trial-end / renewal charge failed</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value" style={{ color: "#dc2626" }}>{billingSummary.pctDay78}%</div>
+                <div className="metric-label">On Day 7–8</div>
+                <div className="metric-description">right at the trial-end charge</div>
+              </div>
+              <div className="metric-card">
+                <div className="metric-value">{billingSummary.median}</div>
+                <div className="metric-label">Median Day</div>
+                <div className="metric-description">days after trial start</div>
+              </div>
+            </section>
+
+            <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+              <div className="ret-chart-head"><h3>When in the trial the charge fails</h3></div>
+              <p className="ret-chart-sub">
+                Billing issues by <strong>days after trial start</strong>. The 7-day trial ends and the card is charged
+                on day 7 — the spike at <strong>day 7–8</strong> is that charge failing. Bars past day 8 are later
+                subscription-renewal failures.
+              </p>
+              <div style={{ width: "100%", height: 320 }}>
+                <ResponsiveContainer>
+                  <BarChart data={billingDays} margin={{ top: 18, right: 20, bottom: 8, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} width={48} allowDecimals={false} />
+                    <Tooltip
+                      formatter={(v: number | undefined) => [`${(v ?? 0).toLocaleString()} billing issues`, "Count"]}
+                      labelFormatter={(l) => (String(l) === "15+" ? "15+ days after start" : `Day ${String(l).slice(1)} after trial start`)}
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      cursor={{ fill: "rgba(220,38,38,0.06)" }}
+                    />
+                    <ReferenceLine x="d7" stroke="#c7cdd6" strokeDasharray="4 4" label={{ value: "trial ends", position: "top", fontSize: 10, fill: "#8b929c" }} />
+                    <Bar dataKey="n" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                      {billingDays.map((b, i) => (
+                        <Cell key={i} fill={b.day === 7 || b.day === 8 ? "#dc2626" : "#f4a3a3"} />
+                      ))}
+                      <LabelList dataKey="n" position="top" fontSize={10} fill="#6b7280" formatter={(v: React.ReactNode) => (Number(v) > 0 ? String(v) : "")} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+              <div className="ret-chart-head"><h3>Billing issues over time</h3></div>
+              <p className="ret-chart-sub">Count of billing issues by the calendar week they occurred (trial starts in the Timeline range).</p>
+              <div style={{ width: "100%", height: 240 }}>
+                <ResponsiveContainer>
+                  <LineChart data={billingWeekly} margin={{ top: 10, right: 24, bottom: 8, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={20} />
+                    <YAxis tick={{ fontSize: 12 }} width={40} allowDecimals={false} />
+                    <Tooltip formatter={(v: number | undefined) => [`${v ?? 0} billing issues`, "That week"]} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                    <Line type="monotone" dataKey="n" stroke="#dc2626" strokeWidth={2.5} dot={{ r: 2 }} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <p className="ret-chart-sub" style={{ marginTop: "0.75rem", maxWidth: "82ch" }}>
+              <strong>Read with care:</strong> a billing issue = the charge <strong>failed</strong> (PAST_DUE / involuntary),
+              distinct from a voluntary cancel. ~{billingSummary.pctDay78}% land on day 7–8 (the trial-end charge). Timing is
+              from <code>user_info.past_due_at</code>; Android sends no billing events, so some Android failures are undercounted.
+            </p>
+          </>
+        )
+      ) : isRecent ? (
         dailyLoading ? (
           <div style={{ textAlign: "center", padding: "3rem" }}>
             <div className="loading-spinner"></div>
