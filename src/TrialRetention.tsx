@@ -240,6 +240,35 @@ function convRank(u: DayUser): number {
   return v === "converted" ? 2 : v === "in-trial" ? 1 : 0;
 }
 
+// One trial starter row from trial_day_users_range (a DayUser + its trial-start day).
+type TrialUserRow = DayUser & { trial_day: string };
+
+function ageGroup(age: string | null): string {
+  const n = parseInt((age ?? "").trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) return "Unknown";
+  if (n < 18) return "Under 18";
+  if (n < 25) return "18–24";
+  if (n < 35) return "25–34";
+  if (n < 45) return "35–44";
+  return "45+";
+}
+
+// Parameters the per-day retention can be segmented by, and how to read each user's
+// value. Country is derived from time_zone client-side (getCountryFromTimezone).
+const SEG_PARAMS: { key: string; label: string; value: (u: TrialUserRow) => string }[] = [
+  { key: "country", label: "Country", value: (u) => getCountryFromTimezone(u.time_zone) || "Unknown" },
+  { key: "device", label: "Device", value: (u) => deviceLabel(u.platform).label },
+  { key: "learning", label: "Learning language", value: (u) => prettyLang(u.learning_language) },
+  { key: "native", label: "Native language", value: (u) => (u.native_language ? prettyLang(u.native_language) : "Unknown") },
+  { key: "age", label: "Age group", value: (u) => ageGroup(u.age) },
+  { key: "gender", label: "Gender", value: (u) => u.gender || "Unknown" },
+  { key: "demand_tier", label: "Demand tier", value: (u) => u.demand_tier || "Unknown" },
+  { key: "level", label: "Level", value: (u) => u.level || "Unknown" },
+  { key: "reason", label: "Reason for learning", value: (u) => u.reason || "Unknown" },
+  { key: "attribution", label: "Acquisition source", value: (u) => u.attribution || "Unknown" },
+];
+const segAccessor = (key: string) => SEG_PARAMS.find((p) => p.key === key)?.value;
+
 const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
   // timeframe); "trend" = the metric over time (cohort line); "recent" = a
@@ -266,18 +295,19 @@ const TrialRetention: React.FC = () => {
   const [stackMode, setStackMode] = useState<"count" | "share">("share");
   // Click-through: a day's trial starters.
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
-  const [dayUsers, setDayUsers] = useState<DayUser[]>([]);
   // Client-side sort for the drill-down table (sort by any user parameter).
   const [daySort, setDaySort] = useState<{ key: DaySortKey; dir: "asc" | "desc" }>({
     key: "active_days",
     dir: "desc",
   });
-  const [dayUsersLoading, setDayUsersLoading] = useState(false);
-  const [dayUsersError, setDayUsersError] = useState<string | null>(null);
-  const [dayReload, setDayReload] = useState(0); // bump to retry the drill-down fetch
-  const [dailyRows, setDailyRows] = useState<DailyRow[]>([]);
+  // Per-day view: every trial starter in range, fetched once and aggregated +
+  // filtered CLIENT-SIDE so retention can be segmented by any user parameter.
+  const [rangeUsers, setRangeUsers] = useState<TrialUserRow[]>([]);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyError, setDailyError] = useState<string | null>(null);
+  // Segment filter: which parameter, and which value ("" = all of that parameter).
+  const [segParam, setSegParam] = useState<string>("all");
+  const [segValue, setSegValue] = useState<string>("");
 
   // Debounce the window input; granularity applies immediately.
   useEffect(() => {
@@ -324,32 +354,50 @@ const TrialRetention: React.FC = () => {
     return () => clearTimeout(t);
   }, [recentFrom, recentTo]);
 
-  // Fetch the per-day breakdown only when the "Per day" view is active.
+  // Fetch every trial starter in range once (Per-day view). The per-day chart and
+  // the drill-down are aggregated CLIENT-SIDE from `rangeUsers`, which is what lets
+  // the whole view be segmented by any user parameter.
   useEffect(() => {
     if (chartType !== "recent") return;
     let cancelled = false;
     (async () => {
       setDailyLoading(true);
       setDailyError(null);
-      const { data, error } = await supabase.rpc("trial_daily_activity", {
+      const { data, error } = await supabase.rpc("trial_day_users_range", {
         start_date: appliedRange.from || null,
         end_date: appliedRange.to || null,
       });
       if (cancelled) return;
       if (error) {
         setDailyError(error.message);
-        setDailyRows([]);
+        setRangeUsers([]);
       } else {
-        setDailyRows(
-          (data ?? []).map((r: Record<string, unknown>) => ({
-            d: String(r.d),
-            trials: Number(r.trials ?? 0),
-            conversions: Number(r.conversions ?? 0),
-            avg_active: Number(r.avg_active ?? 0),
-            median_active: Number(r.median_active ?? 0),
-            max_active: Number(r.max_active ?? 0),
-            partial: Boolean(r.partial),
-            hist: ((r.hist as number[]) ?? []).map((v) => Number(v)),
+        setRangeUsers(
+          ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+            trial_day: String(r.trial_day),
+            user_id: String(r.user_id),
+            preferred_name: (r.preferred_name as string) ?? null,
+            learning_language: (r.learning_language as string) ?? null,
+            payment_status: (r.payment_status as string) ?? null,
+            age: (r.age as string) ?? null,
+            time_zone: (r.time_zone as string) ?? null,
+            trial_started_at: (r.trial_started_at as string) ?? null,
+            became_active_at: (r.became_active_at as string) ?? null,
+            canceled_from: (r.canceled_from as string) ?? null,
+            active_days: Number(r.active_days ?? 0),
+            lessons: Number(r.lessons ?? 0),
+            post_trial_lessons: Number(r.post_trial_lessons ?? 0),
+            platform: (r.platform as string) ?? null,
+            gender: (r.gender as string) ?? null,
+            native_language: (r.native_language as string) ?? null,
+            level: (r.level as string) ?? null,
+            reason: (r.reason as string) ?? null,
+            demand_tier: (r.demand_tier as string) ?? null,
+            messaging_platform: (r.messaging_platform as string) ?? null,
+            tutor: (r.tutor as string) ?? null,
+            completed_tutorial: (r.completed_tutorial as boolean) ?? null,
+            previous_experience: (r.previous_experience as string) ?? null,
+            attribution: (r.attribution as string) ?? null,
           })),
         );
       }
@@ -360,76 +408,78 @@ const TrialRetention: React.FC = () => {
     };
   }, [chartType, appliedRange]);
 
-  // Fetch the trial starters for a clicked day. Retries transient errors (e.g. a
-  // PostgREST schema-cache reload after an RPC change, or a network blip) before
-  // giving up, and surfaces a real error state — so a failed call never gets
-  // silently shown as "No trial starters found" for a day that actually has some.
-  useEffect(() => {
-    if (!selectedDay) return;
-    let cancelled = false;
-    (async () => {
-      setDayUsersLoading(true);
-      setDayUsersError(null);
-      let data: unknown[] | null = null;
-      let error: { message?: string } | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const res = await supabase.rpc("trial_day_users", { day: selectedDay });
-        if (cancelled) return;
-        if (!res.error) {
-          data = res.data as unknown[] | null;
-          error = null;
-          break;
-        }
-        error = res.error;
-        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
-      }
-      if (cancelled) return;
-      if (error) {
-        setDayUsers([]);
-        setDayUsersError(error.message || "Failed to load trial starters.");
-        setDayUsersLoading(false);
-        return;
-      }
-      setDayUsers(
-        (data ?? []).map((r) => (r as Record<string, unknown>)).map((r) => ({
-              user_id: String(r.user_id),
-              preferred_name: (r.preferred_name as string) ?? null,
-              learning_language: (r.learning_language as string) ?? null,
-              payment_status: (r.payment_status as string) ?? null,
-              age: (r.age as string) ?? null,
-              time_zone: (r.time_zone as string) ?? null,
-              trial_started_at: (r.trial_started_at as string) ?? null,
-              became_active_at: (r.became_active_at as string) ?? null,
-              canceled_from: (r.canceled_from as string) ?? null,
-              active_days: Number(r.active_days ?? 0),
-              lessons: Number(r.lessons ?? 0),
-              post_trial_lessons: Number(r.post_trial_lessons ?? 0),
-              platform: (r.platform as string) ?? null,
-              gender: (r.gender as string) ?? null,
-              native_language: (r.native_language as string) ?? null,
-              level: (r.level as string) ?? null,
-              reason: (r.reason as string) ?? null,
-              demand_tier: (r.demand_tier as string) ?? null,
-              messaging_platform: (r.messaging_platform as string) ?? null,
-              tutor: (r.tutor as string) ?? null,
-              completed_tutorial: (r.completed_tutorial as boolean) ?? null,
-              previous_experience: (r.previous_experience as string) ?? null,
-              attribution: (r.attribution as string) ?? null,
-            })),
-      );
-      setDayUsersLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedDay, dayReload]);
+  // (The clicked-day drill-down is derived client-side from the filtered range —
+  // see the `dayUsers` memo — so no separate fetch is needed.)
 
-  // Reset the day drill-down when the underlying data/range changes.
+  // Reset the day drill-down when the underlying data/range/segment changes.
   useEffect(() => {
     setSelectedDay(null);
-  }, [appliedRange, chartType]);
+  }, [appliedRange, chartType, segParam, segValue]);
 
   const effReachN = Math.min(Math.max(2, Math.round(reachN) || 2), applied.window);
+
+  // ── Per-day segmentation + client-side aggregation ───────────────────────────
+  // Distinct values for the chosen segment parameter (with counts), for the dropdown.
+  const segOptions = useMemo(() => {
+    const acc = segAccessor(segParam);
+    if (!acc) return [] as { v: string; n: number }[];
+    const counts = new Map<string, number>();
+    for (const u of rangeUsers) counts.set(acc(u), (counts.get(acc(u)) ?? 0) + 1);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([v, n]) => ({ v, n }));
+  }, [segParam, rangeUsers]);
+
+  // The trial starters after applying the active segment filter.
+  const filteredUsers = useMemo(() => {
+    const acc = segAccessor(segParam);
+    if (!acc || !segValue) return rangeUsers;
+    return rangeUsers.filter((u) => acc(u) === segValue);
+  }, [rangeUsers, segParam, segValue]);
+
+  // Aggregate the filtered users into per-day rows (same shape trial_daily_activity
+  // returned): trials, conversions, and the exact-active-days histogram (0–7).
+  const dailyRows = useMemo<DailyRow[]>(() => {
+    const byDay = new Map<string, { trials: number; conversions: number; hist: number[]; active: number[] }>();
+    for (const u of filteredUsers) {
+      let e = byDay.get(u.trial_day);
+      if (!e) {
+        e = { trials: 0, conversions: 0, hist: new Array(8).fill(0), active: [] };
+        byDay.set(u.trial_day, e);
+      }
+      e.trials += 1;
+      if (u.became_active_at) e.conversions += 1;
+      const a = Math.max(0, Math.min(7, u.active_days));
+      e.hist[a] += 1;
+      e.active.push(a);
+    }
+    const now = Date.now();
+    return [...byDay.entries()]
+      .sort((x, y) => x[0].localeCompare(y[0]))
+      .map(([d, e]) => {
+        const sorted = [...e.active].sort((a, b) => a - b);
+        const n = sorted.length;
+        const avg = n ? sorted.reduce((a, b) => a + b, 0) / n : 0;
+        const median = n ? (n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2) : 0;
+        return {
+          d,
+          trials: e.trials,
+          conversions: e.conversions,
+          avg_active: Math.round(avg * 100) / 100,
+          median_active: Math.round(median * 10) / 10,
+          max_active: n ? sorted[n - 1] : 0,
+          partial: new Date(d + "T00:00:00").getTime() + 7 * 86_400_000 > now,
+          hist: e.hist,
+        };
+      });
+  }, [filteredUsers]);
+
+  // The clicked day's trial starters (already filtered by segment).
+  const dayUsers = useMemo(
+    () => (selectedDay ? filteredUsers.filter((u) => u.trial_day === selectedDay) : []),
+    [filteredUsers, selectedDay],
+  );
+  const segLabel = segParam === "all" ? null : SEG_PARAMS.find((p) => p.key === segParam)?.label ?? null;
 
   // Cohorts big enough to show in the time-trend line (RPC returns them asc).
   const shownRows = useMemo(() => rows.filter((r) => r.users >= MIN_USERS), [rows]);
@@ -699,6 +749,41 @@ const TrialRetention: React.FC = () => {
                 }}
               >
                 Reset
+              </button>
+            )}
+            <span style={{ width: 1, height: 22, background: "#e5e7eb", margin: "0 0.2rem" }} />
+            <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              Segment
+              <select
+                className="filter-select"
+                value={segParam}
+                onChange={(e) => {
+                  setSegParam(e.target.value);
+                  setSegValue("");
+                }}
+              >
+                <option value="all">All users</option>
+                {SEG_PARAMS.map((p) => (
+                  <option key={p.key} value={p.key}>{p.label}</option>
+                ))}
+              </select>
+            </label>
+            {segParam !== "all" && (
+              <select
+                className="filter-select"
+                value={segValue}
+                onChange={(e) => setSegValue(e.target.value)}
+                title="Pick a value to show only that segment"
+              >
+                <option value="">All {segLabel?.toLowerCase()} ({rangeUsers.length})</option>
+                {segOptions.map((o) => (
+                  <option key={o.v} value={o.v}>{o.v} ({o.n})</option>
+                ))}
+              </select>
+            )}
+            {segParam !== "all" && segValue && (
+              <button className="filters-clear-btn" onClick={() => { setSegParam("all"); setSegValue(""); }}>
+                Clear segment
               </button>
             )}
           </>
@@ -1048,26 +1133,14 @@ const TrialRetention: React.FC = () => {
                       const d = new Date(selectedDay + "T00:00:00");
                       return Number.isNaN(d.getTime()) ? selectedDay : format(d, "MMM d, yyyy");
                     })()}
-                    {!dayUsersLoading ? ` · ${dayUsers.length} users` : ""}
+                    {` · ${dayUsers.length} users`}
+                    {segLabel && segValue ? ` · ${segLabel}: ${segValue}` : ""}
                   </h3>
                   <button className="filters-clear-btn" onClick={() => setSelectedDay(null)}>
                     Close
                   </button>
                 </div>
-                {dayUsersLoading ? (
-                  <div style={{ textAlign: "center", padding: "1.5rem" }}>
-                    <div className="loading-spinner"></div>
-                  </div>
-                ) : dayUsersError ? (
-                  <div className="empty-state" style={{ padding: "1.5rem", color: "#b42318" }}>
-                    Couldn’t load trial starters — {dayUsersError}
-                    <div style={{ marginTop: "0.75rem" }}>
-                      <button className="ret-seg-btn" onClick={() => setDayReload((n) => n + 1)}>
-                        Retry
-                      </button>
-                    </div>
-                  </div>
-                ) : dayUsers.length === 0 ? (
+                {dayUsers.length === 0 ? (
                   <div className="empty-state" style={{ padding: "1.5rem" }}>No trial starters found for this day.</div>
                 ) : (
                   <>
