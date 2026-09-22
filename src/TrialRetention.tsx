@@ -222,6 +222,24 @@ function prettyLang(code: string | null): string {
     .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
     .join(" ");
 }
+
+// Sortable columns of the per-day trial-starters drill-down table.
+type DaySortKey =
+  | "name" | "country" | "age" | "learning" | "device"
+  | "converted" | "active_days" | "lessons" | "likely";
+// Text columns default to A→Z on first click; numeric ones to high→low.
+const DAY_STRING_COLS = new Set<DaySortKey>(["name", "country", "learning", "device"]);
+// Numeric age for sorting; unset ("0"/"-1"/blank) sorts as -1 (bottom when desc).
+function dayAgeNum(u: DayUser): number {
+  const n = parseInt((u.age ?? "").trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : -1;
+}
+// Rank the converted status for sorting: converted > in-trial > not converted.
+function convRank(u: DayUser): number {
+  const v = convertedBadge(u).variant;
+  return v === "converted" ? 2 : v === "in-trial" ? 1 : 0;
+}
+
 const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
   // timeframe); "trend" = the metric over time (cohort line); "recent" = a
@@ -249,6 +267,11 @@ const TrialRetention: React.FC = () => {
   // Click-through: a day's trial starters.
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [dayUsers, setDayUsers] = useState<DayUser[]>([]);
+  // Client-side sort for the drill-down table (sort by any user parameter).
+  const [daySort, setDaySort] = useState<{ key: DaySortKey; dir: "asc" | "desc" }>({
+    key: "active_days",
+    dir: "desc",
+  });
   const [dayUsersLoading, setDayUsersLoading] = useState(false);
   const [dayUsersError, setDayUsersError] = useState<string | null>(null);
   const [dayReload, setDayReload] = useState(0); // bump to retry the drill-down fetch
@@ -535,6 +558,44 @@ const TrialRetention: React.FC = () => {
     const avgActive = trials ? activeSum / trials : 0;
     return { trials, avgActive, score: Math.round((avgActive / 7) * 100), busiest, days: dailyRows.length };
   }, [dailyRows]);
+
+  // The drill-down table, sorted by the chosen user parameter.
+  const sortedDayUsers = useMemo(() => {
+    const { key, dir } = daySort;
+    const name = (u: DayUser) => (u.preferred_name || u.user_id).toLowerCase();
+    const prob = (u: DayUser) => scoreConversion(u as unknown as Record<string, unknown>)?.prob ?? -1;
+    const arr = [...dayUsers];
+    arr.sort((a, b) => {
+      let r = 0;
+      switch (key) {
+        case "name": r = name(a).localeCompare(name(b)); break;
+        case "country": r = getCountryFromTimezone(a.time_zone).localeCompare(getCountryFromTimezone(b.time_zone)); break;
+        case "age": r = dayAgeNum(a) - dayAgeNum(b); break;
+        case "learning": r = (a.learning_language ?? "").localeCompare(b.learning_language ?? ""); break;
+        case "device": r = deviceLabel(a.platform).label.localeCompare(deviceLabel(b.platform).label); break;
+        case "converted": r = convRank(a) - convRank(b); break;
+        case "active_days": r = a.active_days - b.active_days; break;
+        case "lessons": r = a.lessons - b.lessons; break;
+        case "likely": r = prob(a) - prob(b); break;
+      }
+      if (r === 0) r = name(a).localeCompare(name(b)); // stable tiebreak by name
+      return dir === "asc" ? r : -r;
+    });
+    return arr;
+  }, [dayUsers, daySort]);
+
+  const sortDayBy = (key: DaySortKey) =>
+    setDaySort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: DAY_STRING_COLS.has(key) ? "asc" : "desc" },
+    );
+  const sortInd = (key: DaySortKey) => (
+    <span style={{ color: daySort.key === key ? "#4f46e5" : "#cbd5e1", marginLeft: 3 }}>
+      {daySort.key === key ? (daySort.dir === "asc" ? "▲" : "▼") : "↕"}
+    </span>
+  );
+  const sortThStyle: React.CSSProperties = { cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" };
 
   const headCount = isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
 
@@ -1011,26 +1072,26 @@ const TrialRetention: React.FC = () => {
                 ) : (
                   <>
                     <p className="ret-chart-sub">
-                      Sorted by active days. Click a name to open that user's profile in a new tab.
+                      Click any column header to sort by that parameter (click again to reverse). Click a name to open that user's profile in a new tab.
                     </p>
                     <div className="table-container">
                       <table className="data-table">
                         <thead className="table-head">
                           <tr>
-                            <th>User</th>
-                            <th>Country</th>
-                            <th>Age</th>
-                            <th>Learning</th>
-                            <th>Device</th>
-                            <th title="Whether the user ever converted (became_active_at) — a converted-then-cancelled user still generated revenue, unlike a trial cancelled before it charged">Converted</th>
-                            <th title="Distinct days with a completed lesson, in the 7-day trial window">Active days</th>
-                            <th title="Total lessons completed in the 7-day trial window (engagement)">Lessons</th>
-                            <th title="Predicted trial-conversion likelihood from the signup-demographics scorecard (a lean, not a certainty)">Likely convert</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("name")} title="Sort by name">User{sortInd("name")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("country")} title="Sort by country">Country{sortInd("country")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("age")} title="Sort by age">Age{sortInd("age")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("learning")} title="Sort by learning language">Learning{sortInd("learning")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("device")} title="Sort by device">Device{sortInd("device")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("converted")} title="Sort by converted status (converted > in-trial > not converted). Converted = ever became_active_at; a converted-then-cancelled user still generated revenue.">Converted{sortInd("converted")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("active_days")} title="Sort by active days — distinct days with a completed lesson in the 7-day trial window">Active days{sortInd("active_days")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("lessons")} title="Sort by lessons completed in the 7-day trial window">Lessons{sortInd("lessons")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Sort by predicted trial-conversion likelihood (signup-demographics scorecard — a lean, not a certainty)">Likely convert{sortInd("likely")}</th>
                             <th></th>
                           </tr>
                         </thead>
                         <tbody className="table-body">
-                          {dayUsers.map((u) => {
+                          {sortedDayUsers.map((u) => {
                             const href = `#user-lookup:${u.user_id}`;
                             return (
                               <tr key={u.user_id}>
