@@ -102,6 +102,7 @@ interface DayUser {
   time_zone: string | null;
   trial_started_at: string | null;
   became_active_at: string | null;
+  canceled_at: string | null; // when they cancelled (trial or later renewal)
   canceled_from: string | null; // state they cancelled from: TRIAL / PAST_DUE / …
   active_days: number;
   lessons: number;
@@ -226,7 +227,7 @@ function prettyLang(code: string | null): string {
 // Sortable columns of the per-day trial-starters drill-down table.
 type DaySortKey =
   | "name" | "country" | "age" | "learning" | "device"
-  | "converted" | "active_days" | "lessons" | "likely";
+  | "converted" | "canceled_after" | "active_days" | "lessons" | "likely";
 // Text columns default to A→Z on first click; numeric ones to high→low.
 const DAY_STRING_COLS = new Set<DaySortKey>(["name", "country", "learning", "device"]);
 // Numeric age for sorting; unset ("0"/"-1"/blank) sorts as -1 (bottom when desc).
@@ -238,6 +239,29 @@ function dayAgeNum(u: DayUser): number {
 function convRank(u: DayUser): number {
   const v = convertedBadge(u).variant;
   return v === "converted" ? 2 : v === "in-trial" ? 1 : 0;
+}
+// Milliseconds from trial start to cancellation (−1 when they never cancelled or
+// either timestamp is missing) — used both for the label and for sorting.
+function canceledAfterMs(u: DayUser): number {
+  if (!u.canceled_at || !u.trial_started_at) return -1;
+  const ms = new Date(u.canceled_at).getTime() - new Date(u.trial_started_at).getTime();
+  return Number.isFinite(ms) && ms >= 0 ? ms : -1;
+}
+// Human "canceled after" label: coarsest sensible unit (Xd Yh / Xh Ym / Xm),
+// "—" when they never cancelled. >7 days ⇒ they cancelled a paid renewal, not the trial.
+function canceledAfterLabel(u: DayUser): string {
+  const ms = canceledAfterMs(u);
+  if (ms < 0) return "—";
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) {
+    const rem = mins % 60;
+    return rem ? `${hrs}h ${rem}m` : `${hrs}h`;
+  }
+  const days = Math.floor(hrs / 24);
+  const remH = hrs % 24;
+  return remH ? `${days}d ${remH}h` : `${days}d`;
 }
 
 // One trial starter row from trial_day_users_range (a DayUser + its trial-start day).
@@ -398,6 +422,7 @@ const TrialRetention: React.FC = () => {
             time_zone: (r.time_zone as string) ?? null,
             trial_started_at: (r.trial_started_at as string) ?? null,
             became_active_at: (r.became_active_at as string) ?? null,
+            canceled_at: (r.canceled_at as string) ?? null,
             canceled_from: (r.canceled_from as string) ?? null,
             active_days: Number(r.active_days ?? 0),
             lessons: Number(r.lessons ?? 0),
@@ -708,6 +733,7 @@ const TrialRetention: React.FC = () => {
         case "learning": r = (a.learning_language ?? "").localeCompare(b.learning_language ?? ""); break;
         case "device": r = deviceLabel(a.platform).label.localeCompare(deviceLabel(b.platform).label); break;
         case "converted": r = convRank(a) - convRank(b); break;
+        case "canceled_after": r = canceledAfterMs(a) - canceledAfterMs(b); break;
         case "active_days": r = a.active_days - b.active_days; break;
         case "lessons": r = a.lessons - b.lessons; break;
         case "likely": r = prob(a) - prob(b); break;
@@ -1339,6 +1365,7 @@ const TrialRetention: React.FC = () => {
                             <th style={sortThStyle} onClick={() => sortDayBy("learning")} title="Sort by learning language">Learning{sortInd("learning")}</th>
                             <th style={sortThStyle} onClick={() => sortDayBy("device")} title="Sort by device">Device{sortInd("device")}</th>
                             <th style={sortThStyle} onClick={() => sortDayBy("converted")} title="Sort by converted status (converted > in-trial > not converted). Converted = ever became_active_at; a converted-then-cancelled user still generated revenue.">Converted{sortInd("converted")}</th>
+                            <th style={sortThStyle} onClick={() => sortDayBy("canceled_after")} title="Time from trial start to cancellation. Under 7d = cancelled during the trial; over 7d = cancelled a paid renewal later. — = never cancelled.">Canceled after{sortInd("canceled_after")}</th>
                             <th style={sortThStyle} onClick={() => sortDayBy("active_days")} title="Sort by active days — distinct days with a completed lesson in the 7-day trial window">Active days{sortInd("active_days")}</th>
                             <th style={sortThStyle} onClick={() => sortDayBy("lessons")} title="Sort by lessons completed in the 7-day trial window">Lessons{sortInd("lessons")}</th>
                             <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Sort by predicted trial-conversion likelihood (signup-demographics scorecard — a lean, not a certainty)">Likely convert{sortInd("likely")}</th>
@@ -1396,6 +1423,21 @@ const TrialRetention: React.FC = () => {
                                             {tag.label}
                                           </span>
                                         )}
+                                      </span>
+                                    );
+                                  })()}
+                                </td>
+                                <td>
+                                  {(() => {
+                                    const ms = canceledAfterMs(u);
+                                    if (ms < 0) return <span style={{ color: "#9ca3af" }}>—</span>;
+                                    const withinTrial = ms <= 7 * 24 * 3600 * 1000;
+                                    return (
+                                      <span
+                                        style={{ color: withinTrial ? "#b91c1c" : "#6b7280", fontWeight: withinTrial ? 600 : 400, whiteSpace: "nowrap" }}
+                                        title={`Cancelled ${new Date(u.canceled_at as string).toLocaleString()} — ${canceledAfterLabel(u)} after starting the trial${withinTrial ? " (during the 7-day trial)" : " (a paid renewal, after the trial)"}${u.canceled_from ? ` · from ${u.canceled_from}` : ""}`}
+                                      >
+                                        {canceledAfterLabel(u)}
                                       </span>
                                     );
                                   })()}

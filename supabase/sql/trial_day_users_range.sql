@@ -22,6 +22,7 @@ returns table(
   time_zone text,
   trial_started_at timestamptz,
   became_active_at timestamptz,
+  canceled_at timestamptz,
   canceled_from text,
   active_days int,
   lessons int,
@@ -42,7 +43,7 @@ language sql stable as $$
   select
     (u.trial_started_at at time zone 'UTC')::date as trial_day,
     u.user_id, u.preferred_name, u.learning_language, u.payment_status, u.age::text, u.time_zone,
-    u.trial_started_at, u.became_active_at, u.canceled_from,
+    u.trial_started_at, u.became_active_at, u.canceled_at, u.canceled_from,
     agg.active_days, agg.lessons, agg.post_trial_lessons,
     u.platform, u.gender, u.native_language, u.level, u.reason, u.demand_tier,
     u.messaging_platform, u.tutor, u.completed_tutorial, u.previous_experience, u.attribution
