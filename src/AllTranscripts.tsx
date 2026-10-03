@@ -34,6 +34,7 @@ import {
   deleteSavedTranscript,
 } from "./lib/savedStore";
 import TutorEvalPanel from "./TutorEvalPanel";
+import TranscriptsWorldMap from "./TranscriptsWorldMap";
 import { format } from "date-fns";
 
 interface TranscriptRow {
@@ -1393,6 +1394,11 @@ const AllTranscripts: React.FC = () => {
           {rows.length} loaded{hasMore ? "+" : ""}
         </span>
       </h2>
+
+      <TranscriptsWorldMap
+        selectedCountry={filterCountry}
+        onSelectCountry={setFilterCountry}
+      />
 
       <div className="tx-filters">
         <div className="tx-filters-row">
