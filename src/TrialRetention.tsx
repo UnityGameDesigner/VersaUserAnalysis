@@ -17,7 +17,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from "recharts";
-import { format, subMonths } from "date-fns";
+import { format, subMonths, subDays } from "date-fns";
 
 // "Trial Retention" — is retention improving for people who START the trial?
 // Each user is cohorted by the month/week of their FIRST completed lesson (the
@@ -372,10 +372,13 @@ const TrialRetention: React.FC = () => {
   const [rows, setRows] = useState<CohortRaw[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // "Per day" view: a start/end date range (empty = default last 20 days).
+  // "Per day" / "Outcomes" view: a start/end date range (empty = default last 20 days).
   const [recentFrom, setRecentFrom] = useState("");
   const [recentTo, setRecentTo] = useState("");
   const [appliedRange, setAppliedRange] = useState({ from: "", to: "" });
+  // Which quick-range preset is active for the per-day/outcomes range ("" = the
+  // default last-20-days window, "custom" = a hand-picked From/To).
+  const [recentPreset, setRecentPreset] = useState<string>("");
   // Per-day stack: raw counts, or 100%-stacked share (every bar full height).
   const [stackMode, setStackMode] = useState<"count" | "share">("share");
   // Click-through: a day's trial starters.
@@ -698,6 +701,24 @@ const TrialRetention: React.FC = () => {
   };
   const rangeActive = Boolean(fromDate || toDate);
 
+  // Quick-range presets for the per-day / outcomes views (drive recentFrom/To,
+  // which is the range those views actually fetch). "all" reaches back to the
+  // earliest trial data; a day count sets a trailing window; null = default.
+  const EARLIEST_TRIAL = "2025-03-01";
+  const RECENT_PRESETS: { key: string; label: string; days: number | null }[] = [
+    { key: "7d", label: "7d", days: 7 },
+    { key: "14d", label: "14d", days: 14 },
+    { key: "30d", label: "30d", days: 30 },
+    { key: "90d", label: "90d", days: 90 },
+    { key: "6m", label: "6M", days: 182 },
+    { key: "all", label: "All", days: null },
+  ];
+  const applyRecentPreset = (key: string, days: number | null) => {
+    setRecentPreset(key);
+    setRecentTo("");
+    setRecentFrom(key === "all" ? EARLIEST_TRIAL : days != null ? format(subDays(new Date(), days), "yyyy-MM-dd") : "");
+  };
+
   const chartData = useMemo(() => {
     return shownRows
       .filter((r) => (!fromDate || r.cohort >= fromDate) && (!toDate || r.cohort <= toDate))
@@ -946,6 +967,18 @@ const TrialRetention: React.FC = () => {
 
         {isRecent || isOutcomes ? (
           <>
+            <div className="ret-seg" role="group" aria-label="Quick range">
+              {RECENT_PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  className={`ret-seg-btn${recentPreset === p.key ? " ret-seg-btn--on" : ""}`}
+                  onClick={() => applyRecentPreset(p.key, p.days)}
+                  title={p.key === "all" ? "All trial data (from Mar 2025)" : `Trial starts in the last ${p.label}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
             <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
               From
               <input
@@ -954,7 +987,7 @@ const TrialRetention: React.FC = () => {
                 value={recentFrom}
                 min="2025-03-01"
                 max={recentTo || undefined}
-                onChange={(e) => setRecentFrom(e.target.value)}
+                onChange={(e) => { setRecentFrom(e.target.value); setRecentPreset("custom"); }}
               />
             </label>
             <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
@@ -964,7 +997,7 @@ const TrialRetention: React.FC = () => {
                 type="date"
                 value={recentTo}
                 min={recentFrom || "2025-03-01"}
-                onChange={(e) => setRecentTo(e.target.value)}
+                onChange={(e) => { setRecentTo(e.target.value); setRecentPreset("custom"); }}
               />
             </label>
             {(recentFrom || recentTo) && (
@@ -973,6 +1006,7 @@ const TrialRetention: React.FC = () => {
                 onClick={() => {
                   setRecentFrom("");
                   setRecentTo("");
+                  setRecentPreset("");
                 }}
               >
                 Reset
@@ -1104,8 +1138,8 @@ const TrialRetention: React.FC = () => {
         )}
       </div>
 
-      {/* Date range (hidden in the per-day view — it has its own last-N-days window) */}
-      {!isRecent && (
+      {/* Date range (hidden in the per-day/outcomes views — they have their own range) */}
+      {!isRecent && !isOutcomes && (
       <div
         className="controls-bar"
         style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap", marginTop: "0.6rem" }}
@@ -1116,6 +1150,7 @@ const TrialRetention: React.FC = () => {
           <button className="ret-seg-btn" onClick={() => applyPreset(12)}>12M</button>
           <button className="ret-seg-btn" onClick={() => applyPreset(6)}>6M</button>
           <button className="ret-seg-btn" onClick={() => applyPreset(3)}>3M</button>
+          <button className="ret-seg-btn" onClick={() => applyPreset(1)}>1M</button>
         </div>
         <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
           From
