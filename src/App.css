@@ -1848,6 +1848,65 @@ body,
   background: #4f46e5;
   color: #fff;
 }
+
+/* Trial Retention — Outcomes view */
+.ret-outcome-card {
+  background: #fff;
+  font: inherit;
+  transition: opacity 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ret-outcome-card:hover {
+  opacity: 1 !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+}
+.ret-outcome-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ret-outcome-bar {
+  display: flex;
+  width: 100%;
+  height: 16px;
+  margin-top: 0.85rem;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f1f5f9;
+}
+.ret-outcome-bar > div {
+  height: 100%;
+  transition: opacity 0.15s ease;
+}
+.ret-outcome-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #c7d2fe;
+  background: #fff;
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ret-outcome-chip:hover {
+  background: #f8fafc;
+}
+.ret-linklike {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #4f46e5;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ret-linklike:hover {
+  text-decoration: underline;
+}
+
 .ret-heatmap-scroll {
   overflow-x: auto;
 }

@@ -211,6 +211,56 @@ function statusTag(u: DayUser): { label: string; variant: string; hint?: string 
   if (s === "EXPIRED") return { label: "Expired", variant: "free" };
   return null;
 }
+
+// ── Trial outcome taxonomy ───────────────────────────────────────────────────
+// Exactly one mutually-exclusive outcome per trial starter, derived from the SAME
+// badge logic shown per-row (convertedBadge + statusTag) so the Outcomes breakdown
+// and the drill-down can never disagree. "Billing issue" = the trial-end charge
+// failed (involuntary, incl. inferred Android); "Cancelled" = voluntary opt-out /
+// expiry; "In trial" = still pending; "Not converted" = ended with no billing or
+// cancellation signal recorded.
+type OutcomeKey = "converted" | "billing_issue" | "cancelled" | "in_trial" | "not_converted";
+
+const OUTCOME_META: Record<OutcomeKey, { label: string; color: string; hint: string }> = {
+  converted: {
+    label: "Converted",
+    color: "#10b981",
+    hint: "Became a paying/active user (includes Android conversions inferred from post-trial lessons).",
+  },
+  billing_issue: {
+    label: "Billing issue",
+    color: "#ef4444",
+    hint: "Trial ended without converting because the charge failed — PAST_DUE (incl. inferred Android billing issues).",
+  },
+  cancelled: {
+    label: "Cancelled",
+    color: "#f59e0b",
+    hint: "Voluntarily cancelled during the trial, or let it expire, without ever converting.",
+  },
+  in_trial: {
+    label: "In trial",
+    color: "#6366f1",
+    hint: "Trial still in progress — the outcome isn't decided yet.",
+  },
+  not_converted: {
+    label: "Not converted",
+    color: "#9ca3af",
+    hint: "Trial ended without converting and with no billing-issue or cancellation signal recorded.",
+  },
+};
+const OUTCOME_ORDER: OutcomeKey[] = ["converted", "billing_issue", "cancelled", "in_trial", "not_converted"];
+
+function outcomeOf(u: DayUser): OutcomeKey {
+  const b = convertedBadge(u);
+  if (b.variant === "converted") return "converted";
+  if (b.variant === "in-trial") return "in_trial";
+  // Churned — split by the cancellation/billing signal.
+  const tag = statusTag(u);
+  if (tag?.variant === "pastdue") return "billing_issue";
+  if (tag?.variant === "free") return "cancelled";
+  return "not_converted";
+}
+
 // user_info.age is TEXT with "0"/"-1" unset sentinels — show real ages only.
 function prettyAge(age: string | null): string {
   const n = parseInt((age ?? "").trim(), 10);
@@ -308,7 +358,7 @@ const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
   // timeframe); "trend" = the metric over time (cohort line); "recent" = a
   // per-day breakdown of the last N days (trial cohort engagement, no min-size).
-  const [chartType, setChartType] = useState<"bars" | "trend" | "recent" | "billing">("bars");
+  const [chartType, setChartType] = useState<"bars" | "trend" | "recent" | "billing" | "outcomes">("bars");
   const [windowDays, setWindowDays] = useState(7); // default = the 7-day trial length
   const [gran, setGran] = useState<Gran>("month");
   const [metric, setMetric] = useState<Metric>("return");
@@ -343,6 +393,10 @@ const TrialRetention: React.FC = () => {
   // Segment filter: which parameter, and which value ("" = all of that parameter).
   const [segParam, setSegParam] = useState<string>("all");
   const [segValue, setSegValue] = useState<string>("");
+  // Outcome filter (cross-applies to the per-day + drill-down views), and the
+  // parameter the Outcomes view breaks the outcome mix down by.
+  const [outcomeFilter, setOutcomeFilter] = useState<OutcomeKey | "all">("all");
+  const [breakdownParam, setBreakdownParam] = useState<string>("country");
   // "Billing issues" view: trial users whose trial-end/renewal charge failed (PAST_DUE).
   const [billingRows, setBillingRows] = useState<BillingRow[]>([]);
   const [billingLoading, setBillingLoading] = useState(false);
@@ -397,7 +451,7 @@ const TrialRetention: React.FC = () => {
   // the drill-down are aggregated CLIENT-SIDE from `rangeUsers`, which is what lets
   // the whole view be segmented by any user parameter.
   useEffect(() => {
-    if (chartType !== "recent") return;
+    if (chartType !== "recent" && chartType !== "outcomes") return;
     let cancelled = false;
     (async () => {
       setDailyLoading(true);
@@ -454,7 +508,7 @@ const TrialRetention: React.FC = () => {
   // Reset the day drill-down when the underlying data/range/segment changes.
   useEffect(() => {
     setSelectedDay(null);
-  }, [appliedRange, chartType, segParam, segValue]);
+  }, [appliedRange, chartType, segParam, segValue, outcomeFilter]);
 
   const effReachN = Math.min(Math.max(2, Math.round(reachN) || 2), applied.window);
 
@@ -538,12 +592,47 @@ const TrialRetention: React.FC = () => {
       .map(([v, n]) => ({ v, n }));
   }, [segParam, rangeUsers]);
 
-  // The trial starters after applying the active segment filter.
-  const filteredUsers = useMemo(() => {
+  // Trial starters after the segment filter. The Outcomes breakdown is computed
+  // over THIS (not the outcome-filtered set) so it always shows the full outcome
+  // mix for the segment.
+  const segmentedUsers = useMemo(() => {
     const acc = segAccessor(segParam);
     if (!acc || !segValue) return rangeUsers;
     return rangeUsers.filter((u) => acc(u) === segValue);
   }, [rangeUsers, segParam, segValue]);
+
+  // …then narrowed to a single outcome when one is selected. Feeds the per-day
+  // chart, the drill-down, and the Outcomes "focus".
+  const filteredUsers = useMemo(() => {
+    if (outcomeFilter === "all") return segmentedUsers;
+    return segmentedUsers.filter((u) => outcomeOf(u) === outcomeFilter);
+  }, [segmentedUsers, outcomeFilter]);
+
+  // Outcome distribution across the current segment (the breakdown's summary).
+  const outcomeCounts = useMemo(() => {
+    const counts = {} as Record<OutcomeKey, number>;
+    for (const k of OUTCOME_ORDER) counts[k] = 0;
+    for (const u of segmentedUsers) counts[outcomeOf(u)] += 1;
+    return { counts, total: segmentedUsers.length };
+  }, [segmentedUsers]);
+
+  // The outcome mix broken down by a chosen parameter (top values), for the
+  // Outcomes stacked-bar chart. Clicking a bar drills into that parameter value.
+  const breakdownData = useMemo(() => {
+    const acc = segAccessor(breakdownParam) ?? (() => "All");
+    const byVal = new Map<string, Record<OutcomeKey, number> & { value: string; total: number }>();
+    for (const u of segmentedUsers) {
+      const v = acc(u);
+      let e = byVal.get(v);
+      if (!e) {
+        e = { value: v, total: 0, converted: 0, billing_issue: 0, cancelled: 0, in_trial: 0, not_converted: 0 };
+        byVal.set(v, e);
+      }
+      e.total += 1;
+      e[outcomeOf(u)] += 1;
+    }
+    return [...byVal.values()].sort((a, b) => b.total - a.total).slice(0, 12);
+  }, [segmentedUsers, breakdownParam]);
 
   // Aggregate the filtered users into per-day rows (same shape trial_daily_activity
   // returned): trials, conversions, and the exact-active-days histogram (0–7).
@@ -681,6 +770,7 @@ const TrialRetention: React.FC = () => {
   const isBars = chartType === "bars";
   const isRecent = chartType === "recent";
   const isBilling = chartType === "billing";
+  const isOutcomes = chartType === "outcomes";
   const anchorNoun = isTrial ? "trial start" : "first lesson";
 
   // Per-day view derived data. Each row also gets b0..b7 = # users with EXACTLY
@@ -757,7 +847,7 @@ const TrialRetention: React.FC = () => {
   );
   const sortThStyle: React.CSSProperties = { cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" };
 
-  const headCount = isBilling ? billingSummary.total : isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
+  const headCount = isBilling ? billingSummary.total : isOutcomes ? outcomeCounts.total : isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
 
   return (
     <div className="lessons-detail" style={{ padding: "1.5rem" }}>
@@ -765,13 +855,19 @@ const TrialRetention: React.FC = () => {
         Trial Retention
         {headCount > 0 && (
           <span className="lessons-detail-count">
-            {headCount.toLocaleString()} {isBilling ? "billing issues" : isRecent ? "trials" : popNoun}
-            {isBilling ? "" : isRecent ? ` · ${rangeLabel}` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
+            {headCount.toLocaleString()} {isBilling ? "billing issues" : isRecent || isOutcomes ? "trials" : popNoun}
+            {isBilling ? "" : isRecent || isOutcomes ? ` · ${rangeLabel}` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
           </span>
         )}
       </h2>
       <p className="ret-chart-sub" style={{ marginTop: "0.4rem", maxWidth: "74ch" }}>
-        {isRecent ? (
+        {isOutcomes ? (
+          <>
+            How the trial starters in {rangeLabel} <strong>ended up</strong> — converted, hit a{" "}
+            <strong>billing issue</strong>, cancelled, still in trial, or ended without converting. Click an outcome to
+            <strong> filter</strong> the whole per-day view to it, and break the mix down by any user parameter below.
+          </>
+        ) : isRecent ? (
           <>
             For each <strong>day</strong> in {rangeLabel}, the users who <strong>started a trial</strong> that day,
             split into <strong>non-overlapping groups by exactly how many distinct days they were active</strong> (0–7)
@@ -839,9 +935,16 @@ const TrialRetention: React.FC = () => {
           >
             Billing issues
           </button>
+          <button
+            className={`ret-seg-btn${chartType === "outcomes" ? " ret-seg-btn--on" : ""}`}
+            onClick={() => setChartType("outcomes")}
+            title="Breakdown of trial outcomes (converted / billing issue / cancelled / in trial), filterable by any parameter"
+          >
+            Outcomes
+          </button>
         </div>
 
-        {isRecent ? (
+        {isRecent || isOutcomes ? (
           <>
             <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
               From
@@ -908,6 +1011,17 @@ const TrialRetention: React.FC = () => {
             {segParam !== "all" && segValue && (
               <button className="filters-clear-btn" onClick={() => { setSegParam("all"); setSegValue(""); }}>
                 Clear segment
+              </button>
+            )}
+            {outcomeFilter !== "all" && (
+              <button
+                className="ret-outcome-chip"
+                onClick={() => setOutcomeFilter("all")}
+                title="Clear the outcome filter"
+                style={{ borderColor: OUTCOME_META[outcomeFilter].color, color: OUTCOME_META[outcomeFilter].color }}
+              >
+                <span className="ret-outcome-dot" style={{ background: OUTCOME_META[outcomeFilter].color }} />
+                Outcome: <strong style={{ marginLeft: 3 }}>{OUTCOME_META[outcomeFilter].label}</strong> ✕
               </button>
             )}
           </>
@@ -1121,6 +1235,145 @@ const TrialRetention: React.FC = () => {
               distinct from a voluntary cancel. ~{billingSummary.pctDay78}% land on day 7–8 (the trial-end charge). Timing is
               from <code>user_info.past_due_at</code>; Android sends no billing events, so some Android failures are undercounted.
             </p>
+          </>
+        )
+      ) : isOutcomes ? (
+        dailyLoading ? (
+          <div style={{ textAlign: "center", padding: "3rem" }}>
+            <div className="loading-spinner"></div>
+            <p className="loading-text">Loading {rangeLabel}…</p>
+          </div>
+        ) : dailyError ? (
+          <div className="error-box" style={{ margin: "1rem 0" }}><p>Failed to load: {dailyError}</p></div>
+        ) : outcomeCounts.total === 0 ? (
+          <div className="empty-state" style={{ padding: "2rem" }}>No trial starters in the selected timeline{segValue ? ` for ${segValue}` : ""}.</div>
+        ) : (
+          <>
+            {/* Outcome summary cards — click to filter the whole per-day view */}
+            <section className="metrics-grid" style={{ marginTop: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+              {OUTCOME_ORDER.map((k) => {
+                const n = outcomeCounts.counts[k];
+                const pct = outcomeCounts.total ? (100 * n) / outcomeCounts.total : 0;
+                const on = outcomeFilter === k;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    className="metric-card ret-outcome-card"
+                    onClick={() => setOutcomeFilter(on ? "all" : k)}
+                    title={`${OUTCOME_META[k].hint}\n\nClick to ${on ? "clear the filter" : "filter every view to these users"}.`}
+                    style={{
+                      cursor: "pointer",
+                      textAlign: "left",
+                      borderColor: on ? OUTCOME_META[k].color : undefined,
+                      boxShadow: on ? `inset 0 0 0 1px ${OUTCOME_META[k].color}` : undefined,
+                      opacity: outcomeFilter === "all" || on ? 1 : 0.55,
+                    }}
+                  >
+                    <div className="metric-value" style={{ color: OUTCOME_META[k].color }}>{n.toLocaleString()}</div>
+                    <div className="metric-label" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                      <span className="ret-outcome-dot" style={{ background: OUTCOME_META[k].color }} />
+                      {OUTCOME_META[k].label}
+                    </div>
+                    <div className="metric-description">{pct.toFixed(1)}% of trials</div>
+                  </button>
+                );
+              })}
+            </section>
+
+            {/* 100%-stacked mix bar */}
+            <div className="ret-outcome-bar" title="Share of trials by outcome">
+              {OUTCOME_ORDER.map((k) => {
+                const n = outcomeCounts.counts[k];
+                if (!n) return null;
+                const pct = (100 * n) / outcomeCounts.total;
+                const on = outcomeFilter === k;
+                return (
+                  <div
+                    key={k}
+                    onClick={() => setOutcomeFilter(on ? "all" : k)}
+                    title={`${OUTCOME_META[k].label}: ${n.toLocaleString()} (${pct.toFixed(1)}%)`}
+                    style={{
+                      width: `${pct}%`,
+                      background: OUTCOME_META[k].color,
+                      opacity: outcomeFilter === "all" || on ? 1 : 0.4,
+                      cursor: "pointer",
+                    }}
+                  />
+                );
+              })}
+            </div>
+            {outcomeFilter !== "all" && (
+              <p className="ret-chart-sub" style={{ marginTop: "0.6rem" }}>
+                Filtering every view to <strong style={{ color: OUTCOME_META[outcomeFilter].color }}>{OUTCOME_META[outcomeFilter].label}</strong>{" "}
+                ({filteredUsers.length.toLocaleString()} {filteredUsers.length === 1 ? "user" : "users"}).{" "}
+                <button className="ret-linklike" onClick={() => setChartType("recent")}>See their per-day retention →</button>{" "}
+                <button className="ret-linklike" onClick={() => setOutcomeFilter("all")}>Clear</button>
+              </p>
+            )}
+
+            {/* Outcome mix broken down by a chosen parameter */}
+            <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+              <div className="ret-chart-head" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "0.6rem" }}>
+                <h3>Outcomes by {SEG_PARAMS.find((p) => p.key === breakdownParam)?.label.toLowerCase() ?? breakdownParam}</h3>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
+                  <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                    Break down by
+                    <select className="filter-select" value={breakdownParam} onChange={(e) => setBreakdownParam(e.target.value)}>
+                      {SEG_PARAMS.map((p) => (
+                        <option key={p.key} value={p.key}>{p.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="ret-seg" role="group" aria-label="Stack mode">
+                    <button className={`ret-seg-btn${stackMode === "share" ? " ret-seg-btn--on" : ""}`} onClick={() => setStackMode("share")}>Share</button>
+                    <button className={`ret-seg-btn${stackMode === "count" ? " ret-seg-btn--on" : ""}`} onClick={() => setStackMode("count")}>Count</button>
+                  </div>
+                </div>
+              </div>
+              <p className="ret-chart-sub">
+                The outcome mix for the top {breakdownData.length} {SEG_PARAMS.find((p) => p.key === breakdownParam)?.label.toLowerCase() ?? breakdownParam} values by trial volume.
+                Click a bar to filter the per-day view to that segment.
+              </p>
+              <div style={{ width: "100%", height: Math.max(220, breakdownData.length * 34 + 60) }}>
+                <ResponsiveContainer>
+                  <BarChart
+                    data={breakdownData}
+                    layout="vertical"
+                    stackOffset={stackMode === "share" ? "expand" : undefined}
+                    margin={{ top: 4, right: 24, bottom: 4, left: 8 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" horizontal={false} />
+                    <XAxis
+                      type="number"
+                      tick={{ fontSize: 12 }}
+                      domain={stackMode === "share" ? [0, 1] : undefined}
+                      tickFormatter={stackMode === "share" ? (v: number) => `${Math.round(v * 100)}%` : undefined}
+                      allowDecimals={false}
+                    />
+                    <YAxis type="category" dataKey="value" tick={{ fontSize: 12 }} width={130} interval={0} />
+                    <Tooltip
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      formatter={(v: number | undefined, name) => [`${(v ?? 0).toLocaleString()}`, name]}
+                      cursor={{ fill: "rgba(99,102,241,0.06)" }}
+                    />
+                    {OUTCOME_ORDER.map((k) => (
+                      <Bar
+                        key={k}
+                        dataKey={k}
+                        stackId="o"
+                        fill={OUTCOME_META[k].color}
+                        name={OUTCOME_META[k].label}
+                        cursor="pointer"
+                        onClick={(d: { value?: string }) => {
+                          if (d?.value) { setSegParam(breakdownParam); setSegValue(d.value); }
+                        }}
+                      />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </>
         )
       ) : isRecent ? (
