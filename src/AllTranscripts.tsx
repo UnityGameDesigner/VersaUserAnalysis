@@ -124,6 +124,7 @@ interface UserMeta {
   daily_streak: number | null;
   time_zone: string | null;
   attribution: string | null;
+  creator_slug: string | null; // which creator/influencer the user came from
   tutor: string | null;
   tutor_accent: string | null;
   demand_tier: string | null;
@@ -144,7 +145,7 @@ interface UserMeta {
 
 const USER_INFO_COLUMNS =
   "user_id, preferred_name, age, gender, native_language, learning_language, " +
-  "level, reason, daily_streak, time_zone, attribution, tutor, tutor_accent, " +
+  "level, reason, daily_streak, time_zone, attribution, creator_slug, tutor, tutor_accent, " +
   "demand_tier, messaging_platform, previous_experience, completed_tutorial, " +
   "lesson_credits, is_creator, left_review, upsell, last_logged_in, " +
   "payment_status, platform, trial_started_at, became_active_at";
@@ -202,6 +203,16 @@ function platformKey(platform: string | null): string {
 // Falls back to the raw key for values platformBadge doesn't recognize.
 function platformFilterLabel(key: string): string {
   return key === NO_PLATFORM ? NO_PLATFORM : (platformBadge(key)?.label ?? key);
+}
+
+// Sentinel the Creator filter uses for users with no creator attribution.
+const NO_CREATOR = "No creator";
+
+// Normalize user_info.creator_slug into a stable filter key. Null/empty collapses
+// to the NO_CREATOR sentinel; otherwise the slug is used as-is (already a stable id).
+function creatorKey(slug: string | null): string {
+  const s = (slug ?? "").trim();
+  return s === "" ? NO_CREATOR : s;
 }
 
 // EXIT_PHASE_META / EXIT_TRIGGER_META / exitKey / exitMeta / exitFilterLabel /
@@ -500,9 +511,10 @@ function buildUserGroups(user: UserMeta): UserGroup[] {
       title: "Account",
       fields: [
         field("Acquired via", user.attribution),
+        field("Creator", user.creator_slug, 40),
         field("Messaging", user.messaging_platform),
         field("Timezone", user.time_zone),
-        field("Creator", user.is_creator ? "Yes" : null),
+        field("Is creator", user.is_creator ? "Yes" : null),
         field("Left review", yesNo(user.left_review)),
         field("Upsell", yesNo(user.upsell)),
       ],
@@ -1018,6 +1030,9 @@ const AllTranscripts: React.FC = () => {
   const [filterLearningLanguage, setFilterLearningLanguage] = useState<string>("All");
   const [filterDemandTier, setFilterDemandTier] = useState<string>("All");
   const [filterTutor, setFilterTutor] = useState<string>("All");
+  // Which creator/influencer the user came from (user_info.creator_slug). The
+  // NO_CREATOR sentinel keeps users with no creator attribution filterable.
+  const [filterCreator, setFilterCreator] = useState<string>("All");
   // Subscription status filter (ACTIVE / CANCELLED / No status / …), driven by
   // user_info.payment_status — the same value shown in the on-card badge.
   const [filterStatus, setFilterStatus] = useState<string>("All");
@@ -1243,6 +1258,22 @@ const AllTranscripts: React.FC = () => {
     return ["All", ...Array.from(set).sort()];
   }, [userMeta]);
 
+  // Creator slugs present in the loaded users, most-common first, with the
+  // "No creator" bucket last so the real creators are easy to pick.
+  const availableCreators = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    userMeta.forEach((u) => {
+      const k = creatorKey(u.creator_slug);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    });
+    const arr = Array.from(counts.keys()).sort((a, b) => {
+      if (a === NO_CREATOR) return 1; // keep "No creator" last
+      if (b === NO_CREATOR) return -1;
+      return (counts.get(b) ?? 0) - (counts.get(a) ?? 0) || a.localeCompare(b);
+    });
+    return ["All", ...arr];
+  }, [userMeta]);
+
   const availableStatuses = React.useMemo(() => {
     const set = new Set<string>();
     userMeta.forEach((u) => set.add(statusKey(u.payment_status)));
@@ -1305,13 +1336,14 @@ const AllTranscripts: React.FC = () => {
       if (filterLearningLanguage !== "All" && (meta?.learning_language ?? null) !== filterLearningLanguage) return false;
       if (filterDemandTier !== "All" && (meta?.demand_tier ?? null) !== filterDemandTier) return false;
       if (filterTutor !== "All" && (meta?.tutor ?? null) !== filterTutor) return false;
+      if (filterCreator !== "All" && creatorKey(meta?.creator_slug ?? null) !== filterCreator) return false;
       if (filterStatus !== "All" && statusKey(meta?.payment_status ?? null) !== filterStatus) return false;
       if (filterPlatform !== "All" && platformKey(meta?.platform ?? null) !== filterPlatform) return false;
       if (filterTrialOutcome !== "All" && trialOutcome(meta) !== filterTrialOutcome) return false;
       if (filterConvLikelihood !== "All" && (scoreConversion(meta as unknown as Record<string, unknown> | undefined)?.tier ?? null) !== filterConvLikelihood) return false;
       return true;
     });
-  }, [rows, userMeta, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome, filterConvLikelihood]);
+  }, [rows, userMeta, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterCreator, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome, filterConvLikelihood]);
 
   const toggleSelect = useCallback((row: TranscriptRow) => {
     setSelected((prev) => {
@@ -1361,6 +1393,7 @@ const AllTranscripts: React.FC = () => {
     filterLearningLanguage !== "All" ||
     filterDemandTier !== "All" ||
     filterTutor !== "All" ||
+    filterCreator !== "All" ||
     filterStatus !== "All" ||
     filterPlatform !== "All" ||
     filterEndedEarly !== "All" ||
@@ -1594,6 +1627,22 @@ const AllTranscripts: React.FC = () => {
               </svg>
             </label>
 
+            <label className="tx-chip" data-active={filterCreator !== "All"} title="Which creator / influencer the user came from (user_info.creator_slug)">
+              <span className="tx-chip-label">Creator</span>
+              <select
+                className="tx-chip-select"
+                value={filterCreator}
+                onChange={(e) => setFilterCreator(e.target.value)}
+              >
+                {availableCreators.map((c) => (
+                  <option key={c} value={c}>{c === "All" ? "Any" : c}</option>
+                ))}
+              </select>
+              <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </label>
+
             <label className="tx-chip" data-active={filterStatus !== "All"}>
               <span className="tx-chip-label">Status</span>
               <select
@@ -1732,6 +1781,7 @@ const AllTranscripts: React.FC = () => {
                   setFilterLearningLanguage("All");
                   setFilterDemandTier("All");
                   setFilterTutor("All");
+                  setFilterCreator("All");
                   setFilterStatus("All");
                   setFilterPlatform("All");
                   setFilterEndedEarly("All");
