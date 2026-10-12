@@ -358,7 +358,7 @@ const TrialRetention: React.FC = () => {
   // "bars" = how many users reached ≥N distinct active days (pooled over the
   // timeframe); "trend" = the metric over time (cohort line); "recent" = a
   // per-day breakdown of the last N days (trial cohort engagement, no min-size).
-  const [chartType, setChartType] = useState<"bars" | "trend" | "recent" | "billing" | "outcomes">("bars");
+  const [chartType, setChartType] = useState<"bars" | "trend" | "recent" | "billing" | "outcomes" | "users">("bars");
   const [windowDays, setWindowDays] = useState(7); // default = the 7-day trial length
   const [gran, setGran] = useState<Gran>("month");
   const [metric, setMetric] = useState<Metric>("return");
@@ -454,7 +454,7 @@ const TrialRetention: React.FC = () => {
   // the drill-down are aggregated CLIENT-SIDE from `rangeUsers`, which is what lets
   // the whole view be segmented by any user parameter.
   useEffect(() => {
-    if (chartType !== "recent" && chartType !== "outcomes") return;
+    if (chartType !== "recent" && chartType !== "outcomes" && chartType !== "users") return;
     let cancelled = false;
     (async () => {
       setDailyLoading(true);
@@ -792,6 +792,7 @@ const TrialRetention: React.FC = () => {
   const isRecent = chartType === "recent";
   const isBilling = chartType === "billing";
   const isOutcomes = chartType === "outcomes";
+  const isUsers = chartType === "users";
   const anchorNoun = isTrial ? "trial start" : "first lesson";
 
   // Per-day view derived data. Each row also gets b0..b7 = # users with EXACTLY
@@ -829,12 +830,13 @@ const TrialRetention: React.FC = () => {
     return { trials, avgActive, score: Math.round((avgActive / 7) * 100), busiest, days: dailyRows.length };
   }, [dailyRows]);
 
-  // The drill-down table, sorted by the chosen user parameter.
-  const sortedDayUsers = useMemo(() => {
+  // Sort any list of trial users by the current column — shared by the per-day
+  // drill-down and the full "Trial users" list.
+  const sortUsers = useCallback((list: DayUser[]) => {
     const { key, dir } = daySort;
     const name = (u: DayUser) => (u.preferred_name || u.user_id).toLowerCase();
     const prob = (u: DayUser) => scoreConversion(u as unknown as Record<string, unknown>)?.prob ?? -1;
-    const arr = [...dayUsers];
+    const arr = [...list];
     arr.sort((a, b) => {
       let r = 0;
       switch (key) {
@@ -853,7 +855,15 @@ const TrialRetention: React.FC = () => {
       return dir === "asc" ? r : -r;
     });
     return arr;
-  }, [dayUsers, daySort]);
+  }, [daySort]);
+
+  // The per-day drill-down table (the clicked day's users), sorted.
+  const sortedDayUsers = useMemo(() => sortUsers(dayUsers), [dayUsers, sortUsers]);
+
+  // The full "Trial users" list — every trial starter in range (segment + outcome
+  // filtered), sorted and capped so a wide "All" range stays responsive.
+  const ALL_USERS_CAP = 1000;
+  const sortedAllUsers = useMemo(() => sortUsers(filteredUsers).slice(0, ALL_USERS_CAP), [filteredUsers, sortUsers]);
 
   const sortDayBy = (key: DaySortKey) =>
     setDaySort((s) =>
@@ -868,7 +878,132 @@ const TrialRetention: React.FC = () => {
   );
   const sortThStyle: React.CSSProperties = { cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" };
 
-  const headCount = isBilling ? billingSummary.total : isOutcomes ? outcomeCounts.total : isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
+  // The trial-users table — a sortable row per user with the conversion-model
+  // score. Shared by the per-day drill-down and the full "Trial users" list.
+  const renderUsersTable = (usersToRender: DayUser[]) => (
+    <div className="table-container">
+      <table className="data-table">
+        <thead className="table-head">
+          <tr>
+            <th style={sortThStyle} onClick={() => sortDayBy("name")} title="Sort by name">User{sortInd("name")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("country")} title="Sort by country">Country{sortInd("country")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("age")} title="Sort by age">Age{sortInd("age")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("learning")} title="Sort by learning language">Learning{sortInd("learning")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("device")} title="Sort by device">Device{sortInd("device")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("converted")} title="Sort by converted status (converted > in-trial > not converted). Converted = ever became_active_at; a converted-then-cancelled user still generated revenue.">Converted{sortInd("converted")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("canceled_after")} title="Time from trial start to cancellation. Under 7d = cancelled during the trial; over 7d = cancelled a paid renewal later. — = never cancelled.">Canceled after{sortInd("canceled_after")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("active_days")} title="Sort by active days — distinct days with a completed lesson in the 7-day trial window">Active days{sortInd("active_days")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("lessons")} title="Sort by lessons completed in the 7-day trial window">Lessons{sortInd("lessons")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Sort by predicted trial-conversion likelihood (signup-demographics scorecard — a lean, not a certainty)">Likely convert{sortInd("likely")}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody className="table-body">
+          {usersToRender.map((u) => {
+            const href = `#user-lookup:${u.user_id}`;
+            return (
+              <tr key={u.user_id}>
+                <td>
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "#4f46e5", textDecoration: "none", fontWeight: 500 }}
+                  >
+                    {u.preferred_name || u.user_id.slice(0, 8) + "…"} ↗
+                  </a>
+                </td>
+                <td>{getCountryFromTimezone(u.time_zone)}</td>
+                <td>{prettyAge(u.age)}</td>
+                <td>{prettyLang(u.learning_language)}</td>
+                <td>
+                  {(() => {
+                    const d = deviceLabel(u.platform);
+                    return (
+                      <span
+                        className={`device-badge device-badge--${d.variant}`}
+                        title={d.variant === "unknown" ? "Device unknown (user_info.platform not set)" : `Device: ${d.label}`}
+                      >
+                        {d.icon} {d.label}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td>
+                  {(() => {
+                    const b = convertedBadge(u);
+                    const tag = statusTag(u);
+                    return (
+                      <span style={{ display: "inline-flex", flexWrap: "wrap", gap: "0.3rem", alignItems: "center" }}>
+                        <span
+                          className={`user-trial-badge user-trial-badge--${b.variant}`}
+                          title={b.hint}
+                        >
+                          {b.label}
+                        </span>
+                        {tag && (
+                          <span
+                            className={`plan-pill plan-pill--${tag.variant}`}
+                            title={tag.hint ?? `Current status: ${u.payment_status}${u.canceled_from ? ` · cancelled from ${u.canceled_from}` : ""}`}
+                          >
+                            {tag.label}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td>
+                  {(() => {
+                    const ms = canceledAfterMs(u);
+                    if (ms < 0) return <span style={{ color: "#9ca3af" }}>—</span>;
+                    const withinTrial = ms <= 7 * 24 * 3600 * 1000;
+                    return (
+                      <span
+                        style={{ color: withinTrial ? "#b91c1c" : "#6b7280", fontWeight: withinTrial ? 600 : 400, whiteSpace: "nowrap" }}
+                        title={`Cancelled ${new Date(u.canceled_at as string).toLocaleString()} — ${canceledAfterLabel(u)} after starting the trial${withinTrial ? " (during the 7-day trial)" : " (a paid renewal, after the trial)"}${u.canceled_from ? ` · from ${u.canceled_from}` : ""}`}
+                      >
+                        {canceledAfterLabel(u)}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td>{u.active_days}</td>
+                <td>{u.lessons}</td>
+                <td>
+                  {(() => {
+                    const cs = scoreConversion(u as unknown as Record<string, unknown>);
+                    if (!cs) return "—";
+                    const m = CONV_TIER_META[cs.tier];
+                    return (
+                      <span
+                        className={`user-conv-badge user-conv-badge--${m.variant}`}
+                        title={`${m.hint} This user: ${Math.round(cs.prob * 100)}%.`}
+                      >
+                        ≈ {m.label} {Math.round(cs.prob * 100)}%
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td>
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "#6b7280", fontSize: "0.8rem" }}
+                  >
+                    Open profile
+                  </a>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const headCount = isBilling ? billingSummary.total : isUsers ? filteredUsers.length : isOutcomes ? outcomeCounts.total : isBars ? barData.totalUsers : isRecent ? dailySummary.trials : summary?.totalUsers ?? 0;
 
   return (
     <div className="lessons-detail" style={{ padding: "1.5rem" }}>
@@ -876,13 +1011,19 @@ const TrialRetention: React.FC = () => {
         Trial Retention
         {headCount > 0 && (
           <span className="lessons-detail-count">
-            {headCount.toLocaleString()} {isBilling ? "billing issues" : isRecent || isOutcomes ? "trials" : popNoun}
-            {isBilling ? "" : isRecent || isOutcomes ? ` · ${rangeLabel}` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
+            {headCount.toLocaleString()} {isBilling ? "billing issues" : isRecent || isOutcomes || isUsers ? "trials" : popNoun}
+            {isBilling ? "" : isRecent || isOutcomes || isUsers ? ` · ${rangeLabel}` : !isBars && summary ? ` · ${summary.count} cohorts` : ""}
           </span>
         )}
       </h2>
       <p className="ret-chart-sub" style={{ marginTop: "0.4rem", maxWidth: "74ch" }}>
-        {isOutcomes ? (
+        {isUsers ? (
+          <>
+            Every user who <strong>started a trial</strong> in {rangeLabel}, one row each, with their{" "}
+            <strong>predicted conversion likelihood</strong> from the signup-demographics scorecard (a lean, not a
+            certainty). Sort by any column; filter by segment or outcome above.
+          </>
+        ) : isOutcomes ? (
           <>
             How the trial starters in {rangeLabel} <strong>ended up</strong> — converted, hit a{" "}
             <strong>billing issue</strong>, cancelled, still in trial, or ended without converting. Click an outcome to
@@ -963,9 +1104,16 @@ const TrialRetention: React.FC = () => {
           >
             Outcomes
           </button>
+          <button
+            className={`ret-seg-btn${chartType === "users" ? " ret-seg-btn--on" : ""}`}
+            onClick={() => setChartType("users")}
+            title="Every trial starter in range, one row each, with the conversion-model score — sortable and filterable"
+          >
+            Trial users
+          </button>
         </div>
 
-        {isRecent || isOutcomes ? (
+        {isRecent || isOutcomes || isUsers ? (
           <>
             <div className="ret-seg" role="group" aria-label="Quick range">
               {RECENT_PRESETS.map((p) => (
@@ -1138,8 +1286,8 @@ const TrialRetention: React.FC = () => {
         )}
       </div>
 
-      {/* Date range (hidden in the per-day/outcomes views — they have their own range) */}
-      {!isRecent && !isOutcomes && (
+      {/* Date range (hidden in the per-day/outcomes/users views — they have their own range) */}
+      {!isRecent && !isOutcomes && !isUsers && (
       <div
         className="controls-bar"
         style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap", marginTop: "0.6rem" }}
@@ -1271,6 +1419,33 @@ const TrialRetention: React.FC = () => {
               from <code>user_info.past_due_at</code>; Android sends no billing events, so some Android failures are undercounted.
             </p>
           </>
+        )
+      ) : isUsers ? (
+        dailyLoading ? (
+          <div style={{ textAlign: "center", padding: "3rem" }}>
+            <div className="loading-spinner"></div>
+            <p className="loading-text">Loading {rangeLabel}…</p>
+          </div>
+        ) : dailyError ? (
+          <div className="error-box" style={{ margin: "1rem 0" }}><p>Failed to load: {dailyError}</p></div>
+        ) : filteredUsers.length === 0 ? (
+          <div className="empty-state" style={{ padding: "2rem" }}>No trial starters in the selected range{segValue ? ` for ${segValue}` : ""}{outcomeFilter !== "all" ? ` with outcome “${OUTCOME_META[outcomeFilter].label}”` : ""}.</div>
+        ) : (
+          <div className="chart-container" style={{ marginTop: "1rem" }}>
+            <div className="ret-chart-head">
+              <h3>
+                Trial users
+                {segValue ? ` · ${segLabel}: ${segValue}` : ""}
+                {outcomeFilter !== "all" ? ` · ${OUTCOME_META[outcomeFilter].label}` : ""}
+              </h3>
+            </div>
+            <p className="ret-chart-sub">
+              {filteredUsers.length.toLocaleString()} trial {filteredUsers.length === 1 ? "user" : "users"} in {rangeLabel}
+              {filteredUsers.length > ALL_USERS_CAP ? ` — showing the top ${ALL_USERS_CAP.toLocaleString()} by the current sort; narrow the range, segment or outcome to see the rest` : ""}.
+              {" "}The <strong>Likely convert</strong> column is the conversion-model score; click it to rank users by it. Click a name to open their profile.
+            </p>
+            {renderUsersTable(sortedAllUsers)}
+          </div>
         )
       ) : isOutcomes ? (
         dailyLoading ? (
@@ -1643,126 +1818,7 @@ const TrialRetention: React.FC = () => {
                     <p className="ret-chart-sub">
                       Click any column header to sort by that parameter (click again to reverse). Click a name to open that user's profile in a new tab.
                     </p>
-                    <div className="table-container">
-                      <table className="data-table">
-                        <thead className="table-head">
-                          <tr>
-                            <th style={sortThStyle} onClick={() => sortDayBy("name")} title="Sort by name">User{sortInd("name")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("country")} title="Sort by country">Country{sortInd("country")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("age")} title="Sort by age">Age{sortInd("age")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("learning")} title="Sort by learning language">Learning{sortInd("learning")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("device")} title="Sort by device">Device{sortInd("device")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("converted")} title="Sort by converted status (converted > in-trial > not converted). Converted = ever became_active_at; a converted-then-cancelled user still generated revenue.">Converted{sortInd("converted")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("canceled_after")} title="Time from trial start to cancellation. Under 7d = cancelled during the trial; over 7d = cancelled a paid renewal later. — = never cancelled.">Canceled after{sortInd("canceled_after")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("active_days")} title="Sort by active days — distinct days with a completed lesson in the 7-day trial window">Active days{sortInd("active_days")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("lessons")} title="Sort by lessons completed in the 7-day trial window">Lessons{sortInd("lessons")}</th>
-                            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Sort by predicted trial-conversion likelihood (signup-demographics scorecard — a lean, not a certainty)">Likely convert{sortInd("likely")}</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody className="table-body">
-                          {sortedDayUsers.map((u) => {
-                            const href = `#user-lookup:${u.user_id}`;
-                            return (
-                              <tr key={u.user_id}>
-                                <td>
-                                  <a
-                                    href={href}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    style={{ color: "#4f46e5", textDecoration: "none", fontWeight: 500 }}
-                                  >
-                                    {u.preferred_name || u.user_id.slice(0, 8) + "…"} ↗
-                                  </a>
-                                </td>
-                                <td>{getCountryFromTimezone(u.time_zone)}</td>
-                                <td>{prettyAge(u.age)}</td>
-                                <td>{prettyLang(u.learning_language)}</td>
-                                <td>
-                                  {(() => {
-                                    const d = deviceLabel(u.platform);
-                                    return (
-                                      <span
-                                        className={`device-badge device-badge--${d.variant}`}
-                                        title={d.variant === "unknown" ? "Device unknown (user_info.platform not set)" : `Device: ${d.label}`}
-                                      >
-                                        {d.icon} {d.label}
-                                      </span>
-                                    );
-                                  })()}
-                                </td>
-                                <td>
-                                  {(() => {
-                                    const b = convertedBadge(u);
-                                    const tag = statusTag(u);
-                                    return (
-                                      <span style={{ display: "inline-flex", flexWrap: "wrap", gap: "0.3rem", alignItems: "center" }}>
-                                        <span
-                                          className={`user-trial-badge user-trial-badge--${b.variant}`}
-                                          title={b.hint}
-                                        >
-                                          {b.label}
-                                        </span>
-                                        {tag && (
-                                          <span
-                                            className={`plan-pill plan-pill--${tag.variant}`}
-                                            title={tag.hint ?? `Current status: ${u.payment_status}${u.canceled_from ? ` · cancelled from ${u.canceled_from}` : ""}`}
-                                          >
-                                            {tag.label}
-                                          </span>
-                                        )}
-                                      </span>
-                                    );
-                                  })()}
-                                </td>
-                                <td>
-                                  {(() => {
-                                    const ms = canceledAfterMs(u);
-                                    if (ms < 0) return <span style={{ color: "#9ca3af" }}>—</span>;
-                                    const withinTrial = ms <= 7 * 24 * 3600 * 1000;
-                                    return (
-                                      <span
-                                        style={{ color: withinTrial ? "#b91c1c" : "#6b7280", fontWeight: withinTrial ? 600 : 400, whiteSpace: "nowrap" }}
-                                        title={`Cancelled ${new Date(u.canceled_at as string).toLocaleString()} — ${canceledAfterLabel(u)} after starting the trial${withinTrial ? " (during the 7-day trial)" : " (a paid renewal, after the trial)"}${u.canceled_from ? ` · from ${u.canceled_from}` : ""}`}
-                                      >
-                                        {canceledAfterLabel(u)}
-                                      </span>
-                                    );
-                                  })()}
-                                </td>
-                                <td>{u.active_days}</td>
-                                <td>{u.lessons}</td>
-                                <td>
-                                  {(() => {
-                                    const cs = scoreConversion(u as unknown as Record<string, unknown>);
-                                    if (!cs) return "—";
-                                    const m = CONV_TIER_META[cs.tier];
-                                    return (
-                                      <span
-                                        className={`user-conv-badge user-conv-badge--${m.variant}`}
-                                        title={`${m.hint} This user: ${Math.round(cs.prob * 100)}%.`}
-                                      >
-                                        ≈ {m.label} {Math.round(cs.prob * 100)}%
-                                      </span>
-                                    );
-                                  })()}
-                                </td>
-                                <td>
-                                  <a
-                                    href={href}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    style={{ color: "#6b7280", fontSize: "0.8rem" }}
-                                  >
-                                    Open profile
-                                  </a>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                    {renderUsersTable(sortedDayUsers)}
                   </>
                 )}
               </div>
