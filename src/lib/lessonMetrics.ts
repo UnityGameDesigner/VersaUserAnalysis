@@ -6,21 +6,33 @@ export interface TranscriptMessage {
   text: string;
 }
 
+// Transcripts come in two shapes: the original tags each turn with
+// `role: "user" | "tutor" | "system"`, while newer lessons (e.g. goal/custom
+// lessons) tag them with `speaker: "learner" | "tutor"` and omit `role`. We
+// normalize both to the `role` convention the UI and metrics expect — the student
+// is always "user" — so speaker-schema lessons don't render every turn as
+// "unknown" (and speaking-ratio / tutor-eval classify the learner correctly).
 export function parseTranscript(raw: unknown): TranscriptMessage[] {
   if (!raw) return [];
   try {
     const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (!Array.isArray(arr)) return [];
-    return arr
+    return (arr as unknown[])
       .filter(
-        (m: unknown): m is { role: string; text: string } =>
+        (m): m is Record<string, unknown> =>
           typeof m === "object" &&
           m !== null &&
-          "text" in m &&
           typeof (m as Record<string, unknown>).text === "string",
       )
-      .filter((m) => m.role !== "ack")
-      .map((m) => ({ role: m.role ?? "unknown", text: m.text }));
+      .map((m) => {
+        const rawRole = String(m.role ?? m.speaker ?? "").trim().toLowerCase();
+        const role =
+          rawRole === "learner" || rawRole === "student"
+            ? "user"
+            : rawRole || "unknown";
+        return { role, text: m.text as string };
+      })
+      .filter((m) => m.role !== "ack");
   } catch {
     return [];
   }
