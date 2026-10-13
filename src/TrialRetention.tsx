@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { supabase } from "./lib/supabase";
 import { getCountryFromTimezone } from "./lib/timezone";
-import { scoreConversion, CONV_TIER_META } from "./lib/conversionScore";
+import { fetchCountryConversionRates, type CountryConvData } from "./lib/countryConversion";
 import {
   LineChart,
   Line,
@@ -400,6 +400,9 @@ const TrialRetention: React.FC = () => {
   // parameter the Outcomes view breaks the outcome mix down by.
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeKey | "all">("all");
   const [breakdownParam, setBreakdownParam] = useState<string>("country");
+  // Empirical per-country conversion rate (active ÷ all users, incl. free) — the
+  // per-user conversion signal shown in the trial-users tables. Fetched once.
+  const [countryConv, setCountryConv] = useState<CountryConvData | null>(null);
   // "Billing issues" view: trial users whose trial-end/renewal charge failed (PAST_DUE).
   const [billingRows, setBillingRows] = useState<BillingRow[]>([]);
   const [billingLoading, setBillingLoading] = useState(false);
@@ -504,6 +507,16 @@ const TrialRetention: React.FC = () => {
       cancelled = true;
     };
   }, [chartType, appliedRange]);
+
+  // Per-country conversion rates (active ÷ all users) — fetched once; powers the
+  // "Country conv." column in the trial-users tables.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCountryConversionRates()
+      .then((d) => { if (!cancelled) setCountryConv(d); })
+      .catch(() => { if (!cancelled) setCountryConv(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   // (The clicked-day drill-down is derived client-side from the filtered range —
   // see the `dayUsers` memo — so no separate fetch is needed.)
@@ -835,7 +848,7 @@ const TrialRetention: React.FC = () => {
   const sortUsers = useCallback((list: DayUser[]) => {
     const { key, dir } = daySort;
     const name = (u: DayUser) => (u.preferred_name || u.user_id).toLowerCase();
-    const prob = (u: DayUser) => scoreConversion(u as unknown as Record<string, unknown>)?.prob ?? -1;
+    const prob = (u: DayUser) => countryConv?.rateForTimezone(u.time_zone)?.rate ?? -1;
     const arr = [...list];
     arr.sort((a, b) => {
       let r = 0;
@@ -855,7 +868,7 @@ const TrialRetention: React.FC = () => {
       return dir === "asc" ? r : -r;
     });
     return arr;
-  }, [daySort]);
+  }, [daySort, countryConv]);
 
   // The per-day drill-down table (the clicked day's users), sorted.
   const sortedDayUsers = useMemo(() => sortUsers(dayUsers), [dayUsers, sortUsers]);
@@ -894,7 +907,7 @@ const TrialRetention: React.FC = () => {
             <th style={sortThStyle} onClick={() => sortDayBy("canceled_after")} title="Time from trial start to cancellation. Under 7d = cancelled during the trial; over 7d = cancelled a paid renewal later. — = never cancelled.">Canceled after{sortInd("canceled_after")}</th>
             <th style={sortThStyle} onClick={() => sortDayBy("active_days")} title="Sort by active days — distinct days with a completed lesson in the 7-day trial window">Active days{sortInd("active_days")}</th>
             <th style={sortThStyle} onClick={() => sortDayBy("lessons")} title="Sort by lessons completed in the 7-day trial window">Lessons{sortInd("lessons")}</th>
-            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Sort by predicted trial-conversion likelihood (signup-demographics scorecard — a lean, not a certainty)">Likely convert{sortInd("likely")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Empirical conversion rate for this user's COUNTRY: active ÷ all users from that country (including free, never-trial). A market signal, not a per-user prediction.">Country conv.{sortInd("likely")}</th>
             <th></th>
           </tr>
         </thead>
@@ -972,15 +985,18 @@ const TrialRetention: React.FC = () => {
                 <td>{u.lessons}</td>
                 <td>
                   {(() => {
-                    const cs = scoreConversion(u as unknown as Record<string, unknown>);
-                    if (!cs) return "—";
-                    const m = CONV_TIER_META[cs.tier];
+                    const cr = countryConv?.rateForTimezone(u.time_zone);
+                    if (!cr) return <span style={{ color: "#9ca3af" }}>—</span>;
+                    const overall = countryConv!.overallRate || 1;
+                    const rel = cr.rate / overall; // vs the overall base
+                    const variant = rel >= 1.5 ? "high" : rel <= 0.6 ? "low" : "medium";
+                    const pct = cr.rate * 100;
                     return (
                       <span
-                        className={`user-conv-badge user-conv-badge--${m.variant}`}
-                        title={`${m.hint} This user: ${Math.round(cs.prob * 100)}%.`}
+                        className={`user-conv-badge user-conv-badge--${variant}`}
+                        title={`${cr.country}: ${cr.active.toLocaleString()} active ÷ ${cr.total.toLocaleString()} total users (incl. free) = ${pct.toFixed(2)}%. Overall is ${(overall * 100).toFixed(2)}% — this market is ${rel.toFixed(1)}× the base. Market signal, not a per-user prediction.`}
                       >
-                        ≈ {m.label} {Math.round(cs.prob * 100)}%
+                        {pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%
                       </span>
                     );
                   })()}
@@ -1019,9 +1035,10 @@ const TrialRetention: React.FC = () => {
       <p className="ret-chart-sub" style={{ marginTop: "0.4rem", maxWidth: "74ch" }}>
         {isUsers ? (
           <>
-            Every user who <strong>started a trial</strong> in {rangeLabel}, one row each, with their{" "}
-            <strong>predicted conversion likelihood</strong> from the signup-demographics scorecard (a lean, not a
-            certainty). Sort by any column; filter by segment or outcome above.
+            Every user who <strong>started a trial</strong> in {rangeLabel}, one row each. The{" "}
+            <strong>Country conv.</strong> column is the empirical conversion rate of the user's country —{" "}
+            active ÷ all users from that country (including free, never-trial) — a market signal, not a per-user
+            prediction. Sort by any column; filter by segment or outcome above.
           </>
         ) : isOutcomes ? (
           <>
@@ -1107,7 +1124,7 @@ const TrialRetention: React.FC = () => {
           <button
             className={`ret-seg-btn${chartType === "users" ? " ret-seg-btn--on" : ""}`}
             onClick={() => setChartType("users")}
-            title="Every trial starter in range, one row each, with the conversion-model score — sortable and filterable"
+            title="Every trial starter in range, one row each, with their country's empirical conversion rate — sortable and filterable"
           >
             Trial users
           </button>
@@ -1442,7 +1459,7 @@ const TrialRetention: React.FC = () => {
             <p className="ret-chart-sub">
               {filteredUsers.length.toLocaleString()} trial {filteredUsers.length === 1 ? "user" : "users"} in {rangeLabel}
               {filteredUsers.length > ALL_USERS_CAP ? ` — showing the top ${ALL_USERS_CAP.toLocaleString()} by the current sort; narrow the range, segment or outcome to see the rest` : ""}.
-              {" "}The <strong>Likely convert</strong> column is the conversion-model score; click it to rank users by it. Click a name to open their profile.
+              {" "}The <strong>Country conv.</strong> column is each user's country conversion rate (active ÷ all users, incl. free); click it to rank by market. Click a name to open their profile.
             </p>
             {renderUsersTable(sortedAllUsers)}
           </div>
