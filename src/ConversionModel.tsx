@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -16,6 +16,7 @@ import {
   explainConversion,
   type ConvTier,
 } from "./lib/conversionScore";
+import { fetchCountryConversionRates, type CountryConvData } from "./lib/countryConversion";
 
 // Explainer + interactive scorer for the trial-conversion prediction model
 // (src/lib/conversionScore.ts). The model is an additive logistic scorecard: a
@@ -129,6 +130,46 @@ const ConversionModel: React.FC = () => {
     <span className={`user-conv-badge user-conv-badge--${CONV_TIER_META[tier].variant}`}>{CONV_TIER_META[tier].label}</span>
   );
 
+  // ── Reality check: empirical conversion by market ───────────────────────────
+  // active (ever became_active_at) ÷ ALL users from that country, incl. free —
+  // the honest absolute signal the demographic tiers above can't give across
+  // markets. Fetched from country_conversion_rates (whole user base).
+  const [conv, setConv] = useState<CountryConvData | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchCountryConversionRates()
+      .then((d) => { if (!cancelled) setConv(d); })
+      .catch(() => { if (!cancelled) setConv(null); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const MARKET_MIN_USERS = 300; // rank rate only for markets with a real sample
+  // Countries ranked by conversion RATE (active ÷ all users).
+  const marketByRate = useMemo(() => {
+    if (!conv) return [];
+    return [...conv.byCountry.values()]
+      .filter((c) => c.country !== "Unknown" && c.total >= MARKET_MIN_USERS)
+      .map((c) => ({
+        country: c.country,
+        rate: c.rate * 100,
+        active: c.active,
+        total: c.total,
+        rel: conv.overallRate ? c.rate / conv.overallRate : 0,
+      }))
+      .sort((a, b) => b.rate - a.rate)
+      .slice(0, 14);
+  }, [conv]);
+  // Countries ranked by VOLUME of actives (where conversions actually come from).
+  const marketByVolume = useMemo(() => {
+    if (!conv) return [];
+    return [...conv.byCountry.values()]
+      .filter((c) => c.country !== "Unknown")
+      .map((c) => ({ country: c.country, active: c.active, total: c.total, rate: c.rate * 100 }))
+      .sort((a, b) => b.active - a.active)
+      .slice(0, 14);
+  }, [conv]);
+  const overallPct = conv ? conv.overallRate * 100 : null;
+
   return (
     <div className="lessons-detail" style={{ padding: "1.5rem" }}>
       <h2 className="lessons-detail-title" style={{ margin: 0 }}>
@@ -141,7 +182,9 @@ const ConversionModel: React.FC = () => {
         <strong>logistic scorecard</strong>: a baseline plus a log-odds contribution per factor, summed and squashed to a
         probability. Cross-validated ROC-AUC <strong>{CARD.cv_auc}</strong> — a useful <em>ranking</em>, not a per-user
         certainty. Trained {CARD.trained_at} on {CARD.trained_rows.toLocaleString()} resolved trials; base conversion rate ≈{" "}
-        {Math.round(CARD.base_rate * 1000) / 10}%.
+        {Math.round(CARD.base_rate * 1000) / 10}%. It ranks well, but its tiers are <em>global</em> — see{" "}
+        <strong>"Where conversions actually come from — by market"</strong> below for the empirical, market-grounded reality
+        (which is what the Trial Retention tables now use).
       </p>
 
       {/* Tiers */}
@@ -167,6 +210,99 @@ const ConversionModel: React.FC = () => {
           <div className="metric-description">all recent trials (the average)</div>
         </div>
       </section>
+
+      {/* Reality-check caveat: tiers are global, absolute rate varies by market */}
+      <div
+        style={{
+          marginTop: "1rem",
+          padding: "0.9rem 1.1rem",
+          background: "#fffbeb",
+          border: "1px solid #fde68a",
+          borderRadius: 10,
+          maxWidth: "88ch",
+          fontSize: "0.85rem",
+          color: "#78350f",
+        }}
+      >
+        <strong>Read the tiers as a ranking, not an absolute promise.</strong> They use one <em>global</em> threshold, so the
+        same "High" badge means very different real odds depending on the user's market — a <strong>"High" user in the US
+        actually converts ~49%, but a "High" user in Jakarta only ~18%</strong>. The model ranks well <em>within</em> a market,
+        but demographics that signal conversion in a high-converting market don't carry over to a low-converting one. For the
+        honest <em>absolute</em> expectation, use the empirical <strong>market rate</strong> below — which is what the Trial
+        Retention tables now show per user.
+      </div>
+
+      {/* Conversion by market — the empirical reality (active ÷ all users, incl. free) */}
+      <div className="chart-container" style={{ marginTop: "1.5rem" }}>
+        <div className="ret-chart-head"><h3>Where conversions actually come from — by market</h3></div>
+        <p className="ret-chart-sub" style={{ maxWidth: "92ch" }}>
+          Grounded in the <strong>whole user base</strong> (every signup, including free users who never started a trial):
+          <strong> active ÷ all users</strong> per country.{" "}
+          {overallPct != null
+            ? <>Overall only <strong>{overallPct.toFixed(2)}%</strong> of all signups ever become active.</>
+            : "Loading…"}{" "}
+          Note the two very different pictures: a market can have a <strong>high rate but tiny volume</strong> (US/UK) or a
+          <strong> low rate but huge volume</strong> (Indonesia, Philippines) — most of our actual conversions come from
+          large, low-rate markets, which is exactly why a demographic "High" tier reads misleadingly for them.
+        </p>
+        {conv === null ? (
+          <div className="empty-state" style={{ padding: "1.5rem" }}>Loading market conversion rates…</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: "1.25rem" }}>
+            {/* By rate */}
+            <div>
+              <div className="user-group-title" style={{ marginBottom: "0.4rem" }}>
+                Highest conversion <strong>rate</strong> (markets ≥ {MARKET_MIN_USERS.toLocaleString()} users)
+              </div>
+              <div style={{ width: "100%", height: marketByRate.length * 26 + 40 }}>
+                <ResponsiveContainer>
+                  <BarChart data={marketByRate} layout="vertical" margin={{ top: 4, right: 48, bottom: 4, left: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${v}%`} />
+                    <YAxis type="category" dataKey="country" width={120} tick={{ fontSize: 11 }} interval={0} />
+                    {overallPct != null && <ReferenceLine x={overallPct} stroke="#9ca3af" strokeDasharray="4 3" label={{ value: "overall", position: "top", fontSize: 10, fill: "#6b7280" }} />}
+                    <Tooltip
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      formatter={(_v: number | undefined, _n, p) => {
+                        const d = p?.payload as { rate: number; active: number; total: number; rel: number };
+                        return [`${d.rate.toFixed(2)}%  (${d.active.toLocaleString()} of ${d.total.toLocaleString()}, ${d.rel.toFixed(1)}× overall)`, "Conversion"];
+                      }}
+                    />
+                    <Bar dataKey="rate" isAnimationActive={false} radius={[0, 3, 3, 0]}>
+                      {marketByRate.map((r, i) => (
+                        <Cell key={i} fill={r.rel >= 1.5 ? POS : r.rel <= 0.6 ? NEG : "#d97706"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            {/* By volume */}
+            <div>
+              <div className="user-group-title" style={{ marginBottom: "0.4rem" }}>
+                Most actives by <strong>volume</strong> (where the revenue is)
+              </div>
+              <div style={{ width: "100%", height: marketByVolume.length * 26 + 40 }}>
+                <ResponsiveContainer>
+                  <BarChart data={marketByVolume} layout="vertical" margin={{ top: 4, right: 48, bottom: 4, left: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="country" width={120} tick={{ fontSize: 11 }} interval={0} />
+                    <Tooltip
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      formatter={(_v: number | undefined, _n, p) => {
+                        const d = p?.payload as { active: number; total: number; rate: number };
+                        return [`${d.active.toLocaleString()} active  (${d.rate.toFixed(2)}% of ${d.total.toLocaleString()})`, "Actives"];
+                      }}
+                    />
+                    <Bar dataKey="active" isAnimationActive={false} radius={[0, 3, 3, 0]} fill="#6366f1" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Interactive scorer */}
       <div className="chart-container" style={{ marginTop: "1.5rem" }}>
