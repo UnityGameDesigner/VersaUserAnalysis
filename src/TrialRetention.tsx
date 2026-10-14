@@ -848,7 +848,7 @@ const TrialRetention: React.FC = () => {
   const sortUsers = useCallback((list: DayUser[]) => {
     const { key, dir } = daySort;
     const name = (u: DayUser) => (u.preferred_name || u.user_id).toLowerCase();
-    const prob = (u: DayUser) => countryConv?.rateForTimezone(u.time_zone)?.rate ?? -1;
+    const prob = (u: DayUser) => countryConv?.blendedFor(u as unknown as Record<string, unknown>)?.blended ?? -1;
     const arr = [...list];
     arr.sort((a, b) => {
       let r = 0;
@@ -907,7 +907,7 @@ const TrialRetention: React.FC = () => {
             <th style={sortThStyle} onClick={() => sortDayBy("canceled_after")} title="Time from trial start to cancellation. Under 7d = cancelled during the trial; over 7d = cancelled a paid renewal later. — = never cancelled.">Canceled after{sortInd("canceled_after")}</th>
             <th style={sortThStyle} onClick={() => sortDayBy("active_days")} title="Sort by active days — distinct days with a completed lesson in the 7-day trial window">Active days{sortInd("active_days")}</th>
             <th style={sortThStyle} onClick={() => sortDayBy("lessons")} title="Sort by lessons completed in the 7-day trial window">Lessons{sortInd("lessons")}</th>
-            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Empirical conversion rate for this user's COUNTRY: active ÷ all users from that country (including free, never-trial). A market signal, not a per-user prediction.">Country conv.{sortInd("likely")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Blended conversion estimate: the user's COUNTRY market rate (active ÷ all users, incl. free), adjusted up/down by their individual signal (age, level, reason…) relative to their country's average.">Conv. estimate{sortInd("likely")}</th>
             <th></th>
           </tr>
         </thead>
@@ -985,16 +985,17 @@ const TrialRetention: React.FC = () => {
                 <td>{u.lessons}</td>
                 <td>
                   {(() => {
-                    const cr = countryConv?.rateForTimezone(u.time_zone);
-                    if (!cr) return <span style={{ color: "#9ca3af" }}>—</span>;
+                    const est = countryConv?.blendedFor(u as unknown as Record<string, unknown>);
+                    if (!est) return <span style={{ color: "#9ca3af" }}>—</span>;
                     const overall = countryConv!.overallRate || 1;
-                    const rel = cr.rate / overall; // vs the overall base
+                    const rel = est.blended / overall; // vs the overall base
                     const variant = rel >= 1.5 ? "high" : rel <= 0.6 ? "low" : "medium";
-                    const pct = cr.rate * 100;
+                    const pct = est.blended * 100;
+                    const liftTxt = est.lift >= 1 ? `${est.lift.toFixed(1)}× up` : `${est.lift.toFixed(2)}× down`;
                     return (
                       <span
                         className={`user-conv-badge user-conv-badge--${variant}`}
-                        title={`${cr.country}: ${cr.active.toLocaleString()} active ÷ ${cr.total.toLocaleString()} total users (incl. free) = ${pct.toFixed(2)}%. Overall is ${(overall * 100).toFixed(2)}% — this market is ${rel.toFixed(1)}× the base. Market signal, not a per-user prediction.`}
+                        title={`${est.country} market rate ${(est.countryRate * 100).toFixed(2)}% × individual ${liftTxt} (age, level, reason… vs ${est.country}'s average) = ${pct.toFixed(2)}%. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
                       >
                         {pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%
                       </span>
@@ -1036,9 +1037,9 @@ const TrialRetention: React.FC = () => {
         {isUsers ? (
           <>
             Every user who <strong>started a trial</strong> in {rangeLabel}, one row each. The{" "}
-            <strong>Country conv.</strong> column is the empirical conversion rate of the user's country —{" "}
-            active ÷ all users from that country (including free, never-trial) — a market signal, not a per-user
-            prediction. Sort by any column; filter by segment or outcome above.
+            <strong>Conv. estimate</strong> blends their country's empirical rate (active ÷ all users, incl. free) with
+            their <strong>individual signal</strong> (age, level, reason…) relative to their country's average — so a young
+            learner in a high-rate market is pulled down, and vice versa. Sort by any column; filter by segment or outcome above.
           </>
         ) : isOutcomes ? (
           <>
@@ -1124,7 +1125,7 @@ const TrialRetention: React.FC = () => {
           <button
             className={`ret-seg-btn${chartType === "users" ? " ret-seg-btn--on" : ""}`}
             onClick={() => setChartType("users")}
-            title="Every trial starter in range, one row each, with their country's empirical conversion rate — sortable and filterable"
+            title="Every trial starter in range, one row each, with a blended conversion estimate (country rate × individual signal) — sortable and filterable"
           >
             Trial users
           </button>
@@ -1459,7 +1460,7 @@ const TrialRetention: React.FC = () => {
             <p className="ret-chart-sub">
               {filteredUsers.length.toLocaleString()} trial {filteredUsers.length === 1 ? "user" : "users"} in {rangeLabel}
               {filteredUsers.length > ALL_USERS_CAP ? ` — showing the top ${ALL_USERS_CAP.toLocaleString()} by the current sort; narrow the range, segment or outcome to see the rest` : ""}.
-              {" "}The <strong>Country conv.</strong> column is each user's country conversion rate (active ÷ all users, incl. free); click it to rank by market. Click a name to open their profile.
+              {" "}The <strong>Conv. estimate</strong> column blends each user's country rate with their individual signal (age, level…); click it to rank. Click a name to open their profile.
             </p>
             {renderUsersTable(sortedAllUsers)}
           </div>
