@@ -15,14 +15,12 @@ import { getCountryFromTimezone } from "./timezone";
 import { explainConversion } from "./conversionScore";
 import baseline from "./convIndivBaseline.json";
 
-// Per-country(×platform) mean "individual log-odds" — model contributions
-// EXCLUDING time_zone AND platform (both grounded in the anchor) + intercept —
-// used to CENTER the blend so an average user in a country/platform gets lift 1.0.
-const BASELINE = baseline as unknown as {
-  global: number;
-  byCountry: Record<string, number>;
-  byCountryPlatform: Record<string, number>;
-};
+// GLOBAL mean of the clean individual signal (age+level+reason log-odds) across
+// all users. The lift is centered on THIS (not per-cell), so age and market
+// COMPOUND: a young learner in a low-converting market stays low, an older learner
+// in a high-converting market stays high — rather than each being judged only
+// relative to their own market's average (which made the two collide).
+const BASELINE = baseline as unknown as { global: number };
 
 const LIFT_MIN = 0.2; // how far the individual signal can move the market rate
 const LIFT_MAX = 5;
@@ -123,16 +121,15 @@ export async function fetchCountryConversionRates(): Promise<CountryConvData> {
       const plat = platKey(meta.platform);
       const ck = `${country}|${plat}`;
 
-      // Prefer the country×platform cell when it has a real sample and a baseline;
-      // otherwise fall back to the country level (keeps anchor + centering aligned).
+      // Anchor on the country×platform cell when it has a real sample; else the
+      // country rate. The individual lift is centered GLOBALLY (not per-cell), so
+      // a young learner in a low market and an older learner in a high market
+      // don't collide at the same estimate.
       const cell = byCell.get(ck);
-      const cellBase = BASELINE.byCountryPlatform[ck];
-      const useCell = !!cell && cell.total >= MIN_CELL_USERS && cellBase != null;
-
+      const useCell = !!cell && cell.total >= MIN_CELL_USERS;
       const anchorRate = useCell ? cell!.rate : cr.rate;
-      const base = useCell ? cellBase : BASELINE.byCountry[country] ?? BASELINE.global;
 
-      const rawLift = Math.exp(individualLogOdds(meta) - base);
+      const rawLift = Math.exp(individualLogOdds(meta) - BASELINE.global);
       const lift = Math.min(LIFT_MAX, Math.max(LIFT_MIN, rawLift));
       const blended = Math.min(BLEND_CAP, anchorRate * lift);
       return {
@@ -142,7 +139,7 @@ export async function fetchCountryConversionRates(): Promise<CountryConvData> {
         platform: plat,
         anchorLevel: useCell ? "country+platform" : "country",
         lift,
-        baseline: base,
+        baseline: BASELINE.global,
       };
     },
   };
