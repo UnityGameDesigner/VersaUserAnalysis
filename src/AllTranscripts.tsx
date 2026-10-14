@@ -14,11 +14,13 @@ import {
 import { exportTranscriptsZip } from "./lib/exportTranscripts";
 import { fetchInterests, prettyInterest } from "./lib/interests";
 import {
-  scoreConversion,
-  CONV_MODEL_AUC,
   CONV_TIER_META,
   CONV_TIER_ORDER,
 } from "./lib/conversionScore";
+import {
+  fetchCountryConversionRates,
+  type CountryConvData,
+} from "./lib/countryConversion";
 import {
   trialOutcome,
   TRIAL_OUTCOME_META,
@@ -528,12 +530,22 @@ function buildUserGroups(user: UserMeta): UserGroup[] {
     .filter((g) => g.fields.length > 0);
 }
 
+// Classify a blended conversion estimate into a tier RELATIVE to the overall
+// active rate (same thresholds the Trial Retention tables use): high ≥ 1.5× the
+// base, low ≤ 0.6×, medium between. Reuses the conv-badge tier labels/variants.
+function blendTier(blended: number, overall: number): "high" | "medium" | "low" {
+  if (overall <= 0) return "medium";
+  const rel = blended / overall;
+  return rel >= 1.5 ? "high" : rel <= 0.6 ? "low" : "medium";
+}
+
 const TranscriptCard: React.FC<{
   row: TranscriptRow;
   user?: UserMeta;
   selected: boolean;
+  countryConv: CountryConvData | null;
   onToggleSelect: (row: TranscriptRow) => void;
-}> = ({ row, user, selected, onToggleSelect }) => {
+}> = ({ row, user, selected, countryConv, onToggleSelect }) => {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
@@ -820,15 +832,22 @@ const TranscriptCard: React.FC<{
                 );
               })()}
               {(() => {
-                const cs = scoreConversion(user as unknown as Record<string, unknown>);
-                if (!cs) return null;
-                const m = CONV_TIER_META[cs.tier];
+                const est = countryConv?.blendedFor(user as unknown as Record<string, unknown>);
+                if (!est) return null;
+                const overall = countryConv!.overallRate || 1;
+                const tier = blendTier(est.blended, overall);
+                const m = CONV_TIER_META[tier];
+                const pct = est.blended * 100;
+                const anchorLabel = est.anchorLevel === "country+platform"
+                  ? `${est.country} · ${est.platform === "none" ? "unknown platform" : est.platform}`
+                  : est.country;
+                const liftTxt = est.lift >= 1 ? `${est.lift.toFixed(1)}× up` : `${est.lift.toFixed(2)}× down`;
                 return (
                   <span
                     className={`user-conv-badge user-conv-badge--${m.variant}`}
-                    title={`${m.hint} This user: ${Math.round(cs.prob * 100)}%.`}
+                    title={`Conversion estimate: ${anchorLabel} market rate ${(est.countryRate * 100).toFixed(2)}% (active ÷ all users; iOS vs Android grounded in real data) × individual ${liftTxt} (age, level, reason… vs that market) = ${pct.toFixed(2)}%. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
                   >
-                    ≈ {m.label}
+                    ≈ {pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%
                   </span>
                 );
               })()}
@@ -1018,6 +1037,16 @@ const AllTranscripts: React.FC = () => {
   const [userMeta, setUserMeta] = useState<Map<string, UserMeta>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Per-country×platform conversion rates for the blended on-card conversion
+  // estimate (country rate × individual signal). Fetched once.
+  const [countryConv, setCountryConv] = useState<CountryConvData | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchCountryConversionRates()
+      .then((d) => { if (!cancelled) setCountryConv(d); })
+      .catch(() => { if (!cancelled) setCountryConv(null); });
+    return () => { cancelled = true; };
+  }, []);
   const [hasMore, setHasMore] = useState(true);
 
   // Rating filter is a comparator (</>/=) plus a threshold value.
@@ -1340,10 +1369,14 @@ const AllTranscripts: React.FC = () => {
       if (filterStatus !== "All" && statusKey(meta?.payment_status ?? null) !== filterStatus) return false;
       if (filterPlatform !== "All" && platformKey(meta?.platform ?? null) !== filterPlatform) return false;
       if (filterTrialOutcome !== "All" && trialOutcome(meta) !== filterTrialOutcome) return false;
-      if (filterConvLikelihood !== "All" && (scoreConversion(meta as unknown as Record<string, unknown> | undefined)?.tier ?? null) !== filterConvLikelihood) return false;
+      if (filterConvLikelihood !== "All") {
+        const est = meta ? countryConv?.blendedFor(meta as unknown as Record<string, unknown>) : null;
+        const tier = est ? blendTier(est.blended, countryConv!.overallRate || 1) : null;
+        if (tier !== filterConvLikelihood) return false;
+      }
       return true;
     });
-  }, [rows, userMeta, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterCreator, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome, filterConvLikelihood]);
+  }, [rows, userMeta, countryConv, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterCreator, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome, filterConvLikelihood]);
 
   const toggleSelect = useCallback((row: TranscriptRow) => {
     setSelected((prev) => {
@@ -1755,7 +1788,7 @@ const AllTranscripts: React.FC = () => {
                 className="tx-chip-select"
                 value={filterConvLikelihood}
                 onChange={(e) => setFilterConvLikelihood(e.target.value)}
-                title={`Predicted trial-conversion likelihood from signup demographics (model AUC ≈ ${CONV_MODEL_AUC}). A lean, not a certainty.`}
+                title="Conversion estimate = the user's country × platform rate (active ÷ all users; iOS vs Android grounded in real data) adjusted by their individual signal (age, level, reason). High ≥ 1.5× the overall base, Low ≤ 0.6×. A lean, not a certainty."
               >
                 <option value="All">Any</option>
                 {CONV_TIER_ORDER.map((t) => (
@@ -1825,6 +1858,7 @@ const AllTranscripts: React.FC = () => {
             row={r}
             user={userMeta.get(r.user_id)}
             selected={selected.has(r.id)}
+            countryConv={countryConv}
             onToggleSelect={toggleSelect}
           />
         ))}
