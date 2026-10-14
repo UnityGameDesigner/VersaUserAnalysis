@@ -907,7 +907,7 @@ const TrialRetention: React.FC = () => {
             <th style={sortThStyle} onClick={() => sortDayBy("canceled_after")} title="Time from trial start to cancellation. Under 7d = cancelled during the trial; over 7d = cancelled a paid renewal later. — = never cancelled.">Canceled after{sortInd("canceled_after")}</th>
             <th style={sortThStyle} onClick={() => sortDayBy("active_days")} title="Sort by active days — distinct days with a completed lesson in the 7-day trial window">Active days{sortInd("active_days")}</th>
             <th style={sortThStyle} onClick={() => sortDayBy("lessons")} title="Sort by lessons completed in the 7-day trial window">Lessons{sortInd("lessons")}</th>
-            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Blended conversion estimate: the user's COUNTRY market rate (active ÷ all users, incl. free), adjusted up/down by their individual signal (age, level, reason…) relative to their country's average.">Conv. estimate{sortInd("likely")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Blended conversion estimate: the user's COUNTRY × PLATFORM market rate (active ÷ all users, incl. free — iOS vs Android grounded empirically), adjusted up/down by their individual signal (age, level, reason…) relative to that market's average.">Conv. estimate{sortInd("likely")}</th>
             <th></th>
           </tr>
         </thead>
@@ -992,10 +992,13 @@ const TrialRetention: React.FC = () => {
                     const variant = rel >= 1.5 ? "high" : rel <= 0.6 ? "low" : "medium";
                     const pct = est.blended * 100;
                     const liftTxt = est.lift >= 1 ? `${est.lift.toFixed(1)}× up` : `${est.lift.toFixed(2)}× down`;
+                    const anchorLabel = est.anchorLevel === "country+platform"
+                      ? `${est.country} · ${est.platform === "none" ? "unknown platform" : est.platform}`
+                      : est.country;
                     return (
                       <span
                         className={`user-conv-badge user-conv-badge--${variant}`}
-                        title={`${est.country} market rate ${(est.countryRate * 100).toFixed(2)}% × individual ${liftTxt} (age, level, reason… vs ${est.country}'s average) = ${pct.toFixed(2)}%. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
+                        title={`${anchorLabel} market rate ${(est.countryRate * 100).toFixed(2)}% (active ÷ all users; platform grounded empirically — iOS converts more than Android) × individual ${liftTxt} (age, level, reason… vs that market's average) = ${pct.toFixed(2)}%. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
                       >
                         {pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%
                       </span>
@@ -1037,9 +1040,10 @@ const TrialRetention: React.FC = () => {
         {isUsers ? (
           <>
             Every user who <strong>started a trial</strong> in {rangeLabel}, one row each. The{" "}
-            <strong>Conv. estimate</strong> blends their country's empirical rate (active ÷ all users, incl. free) with
-            their <strong>individual signal</strong> (age, level, reason…) relative to their country's average — so a young
-            learner in a high-rate market is pulled down, and vice versa. Sort by any column; filter by segment or outcome above.
+            <strong>Conv. estimate</strong> blends their <strong>country × platform</strong> empirical rate (active ÷ all
+            users, incl. free; iOS vs Android grounded in real data) with their <strong>individual signal</strong> (age,
+            level, reason…) vs that market's average — so a young learner in a high-rate market is pulled down, and vice
+            versa. Sort by any column; filter by segment or outcome above.
           </>
         ) : isOutcomes ? (
           <>
@@ -1460,7 +1464,7 @@ const TrialRetention: React.FC = () => {
             <p className="ret-chart-sub">
               {filteredUsers.length.toLocaleString()} trial {filteredUsers.length === 1 ? "user" : "users"} in {rangeLabel}
               {filteredUsers.length > ALL_USERS_CAP ? ` — showing the top ${ALL_USERS_CAP.toLocaleString()} by the current sort; narrow the range, segment or outcome to see the rest` : ""}.
-              {" "}The <strong>Conv. estimate</strong> column blends each user's country rate with their individual signal (age, level…); click it to rank. Click a name to open their profile.
+              {" "}The <strong>Conv. estimate</strong> column blends each user's country × platform rate with their individual signal (age, level…); click it to rank. Click a name to open their profile.
             </p>
             {renderUsersTable(sortedAllUsers)}
           </div>
