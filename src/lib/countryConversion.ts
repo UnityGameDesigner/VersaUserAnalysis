@@ -1,38 +1,24 @@
-// Empirical conversion rate per country × PLATFORM, grounded in the WHOLE user
-// base (every signup, including free users who never started a trial) — the honest
-// "what share of users from this country/platform ever became active (paying)".
-// This is the market anchor for the per-user "Conv. estimate" on the Trial
-// Retention tables: a huge-free-base market like Jakarta reads ~0.7%, and iOS vs
-// Android is grounded in reality (iOS converts 2-5× more within a market — the
-// demographic model gets that DIRECTION wrong, so platform is anchored here, not
-// taken from the model coefficient).
+// Empirical conversion rate per country × PLATFORM × AGE-BUCKET, grounded in the
+// WHOLE user base (every signup, including free users who never started a trial) —
+// the honest "what share of users like this one (same country, platform, age)
+// ever became active (paying)". This is the per-user "Conv. estimate" shown on the
+// Trial Retention tables and the All Transcripts cards.
 //
-// The server (country_conversion_rates RPC) returns per (timezone, platform)
-// totals; we fold timezones into countries here (getCountryFromTimezone).
+// All three drivers are grounded EMPIRICALLY (not the demographic model), because
+// the model mis-estimates each: its platform coefficient is backwards (iOS
+// converts 2-5× more at every age) and its age effect is far too weak (~2.4×
+// young→old vs ~4-5× in reality). The empirical cell rate captures all three
+// cleanly and lets them compound. We fall back to coarser cells (country×platform,
+// then country) when a cell is too thin to trust.
+//
+// The server (country_conversion_rates RPC) returns per (timezone, platform, age
+// bucket) totals; we fold timezones into countries here (getCountryFromTimezone).
 
 import { supabase } from "./supabase";
 import { getCountryFromTimezone } from "./timezone";
-import { explainConversion } from "./conversionScore";
-import baseline from "./convIndivBaseline.json";
 
-// GLOBAL mean of the clean individual signal (age+level+reason log-odds) across
-// all users. The lift is centered on THIS (not per-cell), so age and market
-// COMPOUND: a young learner in a low-converting market stays low, an older learner
-// in a high-converting market stays high — rather than each being judged only
-// relative to their own market's average (which made the two collide).
-const BASELINE = baseline as unknown as { global: number };
-
-const LIFT_MIN = 0.2; // how far the individual signal can move the market rate
-const LIFT_MAX = 5;
-const BLEND_CAP = 0.98; // hard cap on a blended probability
-const MIN_CELL_USERS = 200; // min users to trust a country×platform rate; else fall back to country
-
-// The individual lift uses ONLY these genuinely-personal learner signals. Country
-// & platform (and their proxies: native_language, messaging_platform, attribution,
-// tutor…) are grounded empirically in the anchor, not the model — the model's
-// platform coefficient is backwards (gives Android a boost though iOS converts
-// 2-2.5× more at every age), so trusting it would double-count AND flip the sign.
-const LIFT_INCLUDE = new Set(["age", "level", "reason"]);
+const MIN_AGE_CELL = 150; // min users to trust a country×platform×age rate
+const MIN_PLAT_CELL = 200; // min users to trust a country×platform rate
 
 export interface CountryRate {
   country: string;
@@ -42,62 +28,86 @@ export interface CountryRate {
 }
 
 export interface BlendedEstimate {
-  blended: number; // anchor adjusted by the user's individual signal (0..1)
-  countryRate: number; // the market anchor used (0..1)
+  blended: number; // the conversion estimate for this user (0..1)
+  countryRate: number; // same as blended (kept for the existing callers)
   country: string;
-  platform: string; // "ios" | "android" | "none" — which anchor cell
-  anchorLevel: "country+platform" | "country"; // granularity of the anchor used
-  lift: number; // individual multiplier vs the anchor cell's average demographics
-  baseline: number; // mean individual log-odds used to center
+  platform: string; // "ios" | "android" | "" (unknown)
+  ageBucket: string; // "<=24" | "25-34" | "35-49" | "50+" | "unknown"
+  anchorLevel: "country+platform+age" | "country+platform" | "country";
+  total: number; // sample behind the estimate
+  active: number;
+  lift: number; // always 1 now (kept for existing callers)
+  baseline: number; // 0 (kept for existing callers)
 }
 
 export interface CountryConvData {
-  byCountry: Map<string, CountryRate>; // summed over platforms
+  byCountry: Map<string, CountryRate>; // summed over platform & age
   overallRate: number;
   rateForTimezone: (timeZone: string | null) => CountryRate | null;
   relativeForTimezone: (timeZone: string | null) => number | null;
-  // Blended per-user estimate: the user's country×platform market rate, adjusted
-  // up/down by their individual signal (age, level, reason…) vs that cell's norm.
+  // Empirical conversion estimate for a user: their country×platform×age cell
+  // rate, falling back to country×platform then country when a cell is thin.
   blendedFor: (meta: Record<string, unknown>) => BlendedEstimate | null;
 }
 
-// Individual log-odds = sum of model contributions for the clean learner signals
-// only (age, level, reason) — the per-user deviation the lift adjusts for.
-function individualLogOdds(meta: Record<string, unknown>): number {
-  const ex = explainConversion(meta);
-  if (!ex) return 0;
-  return ex.terms.reduce((s, t) => (LIFT_INCLUDE.has(t.feature) ? s + t.contribution : s), 0);
+const platKey = (p: unknown): string => String(p ?? "").toLowerCase();
+
+export function ageBucket(age: unknown): string {
+  const n = typeof age === "number" ? age : parseInt(String(age ?? "").trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) return "unknown";
+  if (n <= 24) return "<=24";
+  if (n <= 34) return "25-34";
+  if (n <= 49) return "35-49";
+  return "50+";
 }
 
-const platKey = (p: unknown): string => String(p ?? "").toLowerCase() || "none";
+function withRate(c: CountryRate): CountryRate {
+  c.rate = c.total ? c.active / c.total : 0;
+  return c;
+}
+function bump(m: Map<string, CountryRate>, key: string, country: string, total: number, active: number) {
+  const cur = m.get(key) ?? { country, total: 0, active: 0, rate: 0 };
+  cur.total += total;
+  cur.active += active;
+  m.set(key, cur);
+}
 
 export async function fetchCountryConversionRates(): Promise<CountryConvData> {
-  const { data, error } = await supabase.rpc("country_conversion_rates");
-  if (error) throw new Error(error.message);
+  // The RPC returns one row per (timezone × platform × age bucket) — more than
+  // PostgREST's 1000-row response cap — so page through it (ordered in the RPC for
+  // stable pagination) instead of silently truncating to the first 1000.
+  const PAGE = 1000;
+  const rows: Record<string, unknown>[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .rpc("country_conversion_rates")
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    const page = (data ?? []) as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < PAGE) break;
+  }
 
   const byCountry = new Map<string, CountryRate>();
-  const byCell = new Map<string, CountryRate>(); // "country|platform" → rate
+  const byCell2 = new Map<string, CountryRate>(); // country|platform
+  const byCell3 = new Map<string, CountryRate>(); // country|platform|ageBucket
   let totAll = 0;
   let actAll = 0;
-  for (const r of (data ?? []) as Record<string, unknown>[]) {
+  for (const r of rows) {
     const country = getCountryFromTimezone(String(r.time_zone ?? "")) || "Unknown";
     const plat = platKey(r.platform);
+    const bucket = String(r.age_bucket ?? "unknown");
     const total = Number(r.total_users ?? 0);
     const active = Number(r.active_users ?? 0);
     totAll += total;
     actAll += active;
-    const cur = byCountry.get(country) ?? { country, total: 0, active: 0, rate: 0 };
-    cur.total += total;
-    cur.active += active;
-    byCountry.set(country, cur);
-    const ck = `${country}|${plat}`;
-    const cell = byCell.get(ck) ?? { country, total: 0, active: 0, rate: 0 };
-    cell.total += total;
-    cell.active += active;
-    byCell.set(ck, cell);
+    bump(byCountry, country, country, total, active);
+    bump(byCell2, `${country}|${plat}`, country, total, active);
+    bump(byCell3, `${country}|${plat}|${bucket}`, country, total, active);
   }
-  byCountry.forEach((c) => { c.rate = c.total ? c.active / c.total : 0; });
-  byCell.forEach((c) => { c.rate = c.total ? c.active / c.total : 0; });
+  byCountry.forEach(withRate);
+  byCell2.forEach(withRate);
+  byCell3.forEach(withRate);
   const overallRate = totAll ? actAll / totAll : 0;
 
   const rateForTimezone = (timeZone: string | null): CountryRate | null => {
@@ -115,31 +125,38 @@ export async function fetchCountryConversionRates(): Promise<CountryConvData> {
       return cr.rate / overallRate;
     },
     blendedFor: (meta) => {
-      const cr = rateForTimezone((meta.time_zone as string) ?? null);
-      if (!cr) return null;
-      const country = cr.country;
+      const country = getCountryFromTimezone((meta.time_zone as string) ?? "") || "Unknown";
+      const countryRate = byCountry.get(country);
+      if (!countryRate) return null;
       const plat = platKey(meta.platform);
-      const ck = `${country}|${plat}`;
+      const bucket = ageBucket(meta.age);
 
-      // Anchor on the country×platform cell when it has a real sample; else the
-      // country rate. The individual lift is centered GLOBALLY (not per-cell), so
-      // a young learner in a low market and an older learner in a high market
-      // don't collide at the same estimate.
-      const cell = byCell.get(ck);
-      const useCell = !!cell && cell.total >= MIN_CELL_USERS;
-      const anchorRate = useCell ? cell!.rate : cr.rate;
-
-      const rawLift = Math.exp(individualLogOdds(meta) - BASELINE.global);
-      const lift = Math.min(LIFT_MAX, Math.max(LIFT_MIN, rawLift));
-      const blended = Math.min(BLEND_CAP, anchorRate * lift);
+      // Finest reliable cell wins: country×platform×age → country×platform → country.
+      const cell3 = byCell3.get(`${country}|${plat}|${bucket}`);
+      const cell2 = byCell2.get(`${country}|${plat}`);
+      let chosen: CountryRate;
+      let anchorLevel: BlendedEstimate["anchorLevel"];
+      if (cell3 && cell3.total >= MIN_AGE_CELL) {
+        chosen = cell3;
+        anchorLevel = "country+platform+age";
+      } else if (cell2 && cell2.total >= MIN_PLAT_CELL) {
+        chosen = cell2;
+        anchorLevel = "country+platform";
+      } else {
+        chosen = countryRate;
+        anchorLevel = "country";
+      }
       return {
-        blended,
-        countryRate: anchorRate,
+        blended: chosen.rate,
+        countryRate: chosen.rate,
         country,
         platform: plat,
-        anchorLevel: useCell ? "country+platform" : "country",
-        lift,
-        baseline: BASELINE.global,
+        ageBucket: bucket,
+        anchorLevel,
+        total: chosen.total,
+        active: chosen.active,
+        lift: 1,
+        baseline: 0,
       };
     },
   };

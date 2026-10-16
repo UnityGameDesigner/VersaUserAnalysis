@@ -838,14 +838,17 @@ const TranscriptCard: React.FC<{
                 const tier = blendTier(est.blended, overall);
                 const m = CONV_TIER_META[tier];
                 const pct = est.blended * 100;
-                const anchorLabel = est.anchorLevel === "country+platform"
-                  ? `${est.country} · ${est.platform === "none" ? "unknown platform" : est.platform}`
-                  : est.country;
-                const liftTxt = est.lift >= 1 ? `${est.lift.toFixed(1)}× up` : `${est.lift.toFixed(2)}× down`;
+                const platLbl = est.platform === "" ? "unknown platform" : est.platform;
+                const ageLbl = est.ageBucket === "unknown" ? "age n/a" : `age ${est.ageBucket}`;
+                const cohort = est.anchorLevel === "country+platform+age"
+                  ? `${est.country} · ${platLbl} · ${ageLbl}`
+                  : est.anchorLevel === "country+platform"
+                    ? `${est.country} · ${platLbl}`
+                    : est.country;
                 return (
                   <span
                     className={`user-conv-badge user-conv-badge--${m.variant}`}
-                    title={`Conversion estimate: ${anchorLabel} market rate ${(est.countryRate * 100).toFixed(2)}% (active ÷ all users; iOS vs Android grounded in real data) × individual ${liftTxt} (age, level, reason… vs that market) = ${pct.toFixed(2)}%. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
+                    title={`Empirical conversion rate for users like this one — ${cohort}: ${est.active.toLocaleString()} active ÷ ${est.total.toLocaleString()} users (incl. free) = ${pct.toFixed(2)}%. Grounds country, platform (iOS vs Android) and age in real data. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
                   >
                     ≈ {pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%
                   </span>
@@ -1788,7 +1791,7 @@ const AllTranscripts: React.FC = () => {
                 className="tx-chip-select"
                 value={filterConvLikelihood}
                 onChange={(e) => setFilterConvLikelihood(e.target.value)}
-                title="Conversion estimate = the user's country × platform rate (active ÷ all users; iOS vs Android grounded in real data) adjusted by their individual signal (age, level, reason). High ≥ 1.5× the overall base, Low ≤ 0.6×. A lean, not a certainty."
+                title="Conversion estimate = the empirical conversion rate for users in the same country × platform × age cell (active ÷ all users; country, platform and age all grounded in real data). High ≥ 1.5× the overall base, Low ≤ 0.6×. A lean, not a certainty."
               >
                 <option value="All">Any</option>
                 {CONV_TIER_ORDER.map((t) => (

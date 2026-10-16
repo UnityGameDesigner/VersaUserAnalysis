@@ -907,7 +907,7 @@ const TrialRetention: React.FC = () => {
             <th style={sortThStyle} onClick={() => sortDayBy("canceled_after")} title="Time from trial start to cancellation. Under 7d = cancelled during the trial; over 7d = cancelled a paid renewal later. — = never cancelled.">Canceled after{sortInd("canceled_after")}</th>
             <th style={sortThStyle} onClick={() => sortDayBy("active_days")} title="Sort by active days — distinct days with a completed lesson in the 7-day trial window">Active days{sortInd("active_days")}</th>
             <th style={sortThStyle} onClick={() => sortDayBy("lessons")} title="Sort by lessons completed in the 7-day trial window">Lessons{sortInd("lessons")}</th>
-            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Blended conversion estimate: the user's COUNTRY × PLATFORM market rate (active ÷ all users, incl. free — iOS vs Android grounded empirically), adjusted up/down by their individual signal (age, level, reason…) relative to that market's average.">Conv. estimate{sortInd("likely")}</th>
+            <th style={sortThStyle} onClick={() => sortDayBy("likely")} title="Empirical conversion rate for users like this one — active ÷ all users (incl. free) in the same COUNTRY × PLATFORM × AGE cell (falls back to country×platform, then country, when a cell is thin). Country, platform and age all grounded in real data.">Conv. estimate{sortInd("likely")}</th>
             <th></th>
           </tr>
         </thead>
@@ -991,14 +991,17 @@ const TrialRetention: React.FC = () => {
                     const rel = est.blended / overall; // vs the overall base
                     const variant = rel >= 1.5 ? "high" : rel <= 0.6 ? "low" : "medium";
                     const pct = est.blended * 100;
-                    const liftTxt = est.lift >= 1 ? `${est.lift.toFixed(1)}× up` : `${est.lift.toFixed(2)}× down`;
-                    const anchorLabel = est.anchorLevel === "country+platform"
-                      ? `${est.country} · ${est.platform === "none" ? "unknown platform" : est.platform}`
-                      : est.country;
+                    const platLbl = est.platform === "" ? "unknown platform" : est.platform;
+                    const ageLbl = est.ageBucket === "unknown" ? "age n/a" : `age ${est.ageBucket}`;
+                    const cohort = est.anchorLevel === "country+platform+age"
+                      ? `${est.country} · ${platLbl} · ${ageLbl}`
+                      : est.anchorLevel === "country+platform"
+                        ? `${est.country} · ${platLbl}`
+                        : est.country;
                     return (
                       <span
                         className={`user-conv-badge user-conv-badge--${variant}`}
-                        title={`${anchorLabel} market rate ${(est.countryRate * 100).toFixed(2)}% (active ÷ all users; platform grounded empirically — iOS converts more than Android) × individual ${liftTxt} (age, level, reason… vs that market's average) = ${pct.toFixed(2)}%. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
+                        title={`Empirical conversion rate for ${cohort}: ${est.active.toLocaleString()} active ÷ ${est.total.toLocaleString()} users (incl. free) = ${pct.toFixed(2)}%. Grounds country, platform and age in real data. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
                       >
                         {pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%
                       </span>
@@ -1040,10 +1043,10 @@ const TrialRetention: React.FC = () => {
         {isUsers ? (
           <>
             Every user who <strong>started a trial</strong> in {rangeLabel}, one row each. The{" "}
-            <strong>Conv. estimate</strong> blends their <strong>country × platform</strong> empirical rate (active ÷ all
-            users, incl. free; iOS vs Android grounded in real data) with their <strong>individual signal</strong> (age,
-            level, reason…) vs that market's average — so a young learner in a high-rate market is pulled down, and vice
-            versa. Sort by any column; filter by segment or outcome above.
+            <strong>Conv. estimate</strong> is the empirical conversion rate for users like them — active ÷ all users
+            (incl. free) in the same <strong>country × platform × age</strong> cell (country, platform and age all
+            grounded in real data; falls back to coarser cells when thin). Sort by any column; filter by segment or
+            outcome above.
           </>
         ) : isOutcomes ? (
           <>
@@ -1129,7 +1132,7 @@ const TrialRetention: React.FC = () => {
           <button
             className={`ret-seg-btn${chartType === "users" ? " ret-seg-btn--on" : ""}`}
             onClick={() => setChartType("users")}
-            title="Every trial starter in range, one row each, with a blended conversion estimate (country rate × individual signal) — sortable and filterable"
+            title="Every trial starter in range, one row each, with an empirical conversion estimate (country × platform × age cell rate) — sortable and filterable"
           >
             Trial users
           </button>
@@ -1464,7 +1467,7 @@ const TrialRetention: React.FC = () => {
             <p className="ret-chart-sub">
               {filteredUsers.length.toLocaleString()} trial {filteredUsers.length === 1 ? "user" : "users"} in {rangeLabel}
               {filteredUsers.length > ALL_USERS_CAP ? ` — showing the top ${ALL_USERS_CAP.toLocaleString()} by the current sort; narrow the range, segment or outcome to see the rest` : ""}.
-              {" "}The <strong>Conv. estimate</strong> column blends each user's country × platform rate with their individual signal (age, level…); click it to rank. Click a name to open their profile.
+              {" "}The <strong>Conv. estimate</strong> column is each user's country × platform × age empirical conversion rate; click it to rank. Click a name to open their profile.
             </p>
             {renderUsersTable(sortedAllUsers)}
           </div>
