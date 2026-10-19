@@ -8,8 +8,15 @@
 // the model mis-estimates each: its platform coefficient is backwards (iOS
 // converts 2-5× more at every age) and its age effect is far too weak (~2.4×
 // young→old vs ~4-5× in reality). The empirical cell rate captures all three
-// cleanly and lets them compound. We fall back to coarser cells (country×platform,
-// then country) when a cell is too thin to trust.
+// cleanly and lets them compound.
+//
+// SHRINKAGE (empirical Bayes): a raw cell rate from few users is noisy — a thin,
+// high cell can read hot by chance (e.g. Indonesia iOS 50+ = 8/74 = 10.8%). So
+// each cell's rate is pulled toward its PARENT (country×platform×age → country×
+// platform → country → overall) by a pseudo-count K: shrunk = (active + K·parent)
+// / (total + K). A cell with thousands of users barely moves; a 74-user cell gets
+// pulled most of the way to its parent. We then always use the finest cell (no
+// hard sample threshold needed — shrinkage handles small samples gracefully).
 //
 // The server (country_conversion_rates RPC) returns per (timezone, platform, age
 // bucket) totals; we fold timezones into countries here (getCountryFromTimezone).
@@ -17,19 +24,24 @@
 import { supabase } from "./supabase";
 import { getCountryFromTimezone } from "./timezone";
 
-const MIN_AGE_CELL = 150; // min users to trust a country×platform×age rate
-const MIN_PLAT_CELL = 200; // min users to trust a country×platform rate
+// Prior strength in pseudo-users. At K=200 a cell needs ~200 users to weight its
+// own rate 50/50 with its parent's (so ~thousands of users ≈ no shrink, ~tens of
+// users ≈ mostly the parent). Tuned so thin high cells like Indonesia iOS 50+
+// (8/74) drop from ~10.8% toward the Indonesia-iOS parent (~2.7%).
+const SHRINK_K = 200;
 
 export interface CountryRate {
   country: string;
   total: number; // all users (incl. free, never-trial)
   active: number; // ever became active (became_active_at set)
-  rate: number; // active / total (0..1)
+  rate: number; // raw active / total (0..1)
+  shrunk: number; // rate shrunk toward the parent cell (0..1)
 }
 
 export interface BlendedEstimate {
-  blended: number; // the conversion estimate for this user (0..1)
+  blended: number; // the conversion estimate (shrunk) for this user (0..1)
   countryRate: number; // same as blended (kept for the existing callers)
+  rawRate: number; // the cell's unshrunk active/total
   country: string;
   platform: string; // "ios" | "android" | "" (unknown)
   ageBucket: string; // "<=24" | "25-34" | "35-49" | "50+" | "unknown"
@@ -45,8 +57,8 @@ export interface CountryConvData {
   overallRate: number;
   rateForTimezone: (timeZone: string | null) => CountryRate | null;
   relativeForTimezone: (timeZone: string | null) => number | null;
-  // Empirical conversion estimate for a user: their country×platform×age cell
-  // rate, falling back to country×platform then country when a cell is thin.
+  // Shrunk empirical conversion estimate for a user: their country×platform×age
+  // cell rate pulled toward coarser cells in proportion to how thin it is.
   blendedFor: (meta: Record<string, unknown>) => BlendedEstimate | null;
 }
 
@@ -61,12 +73,13 @@ export function ageBucket(age: unknown): string {
   return "50+";
 }
 
-function withRate(c: CountryRate): CountryRate {
-  c.rate = c.total ? c.active / c.total : 0;
-  return c;
-}
+// Beta-binomial posterior mean: pull the cell's observed rate toward `prior`,
+// weighted by K pseudo-observations of the prior.
+const shrinkToward = (active: number, total: number, prior: number): number =>
+  (active + SHRINK_K * prior) / (total + SHRINK_K);
+
 function bump(m: Map<string, CountryRate>, key: string, country: string, total: number, active: number) {
-  const cur = m.get(key) ?? { country, total: 0, active: 0, rate: 0 };
+  const cur = m.get(key) ?? { country, total: 0, active: 0, rate: 0, shrunk: 0 };
   cur.total += total;
   cur.active += active;
   m.set(key, cur);
@@ -105,10 +118,25 @@ export async function fetchCountryConversionRates(): Promise<CountryConvData> {
     bump(byCell2, `${country}|${plat}`, country, total, active);
     bump(byCell3, `${country}|${plat}|${bucket}`, country, total, active);
   }
-  byCountry.forEach(withRate);
-  byCell2.forEach(withRate);
-  byCell3.forEach(withRate);
   const overallRate = totAll ? actAll / totAll : 0;
+
+  // Hierarchical shrinkage: country→overall, cell2→country, cell3→cell2.
+  byCountry.forEach((c) => {
+    c.rate = c.total ? c.active / c.total : 0;
+    c.shrunk = shrinkToward(c.active, c.total, overallRate);
+  });
+  byCell2.forEach((c, key) => {
+    const country = key.slice(0, key.lastIndexOf("|"));
+    const prior = byCountry.get(country)?.shrunk ?? overallRate;
+    c.rate = c.total ? c.active / c.total : 0;
+    c.shrunk = shrinkToward(c.active, c.total, prior);
+  });
+  byCell3.forEach((c, key) => {
+    const cp = key.slice(0, key.lastIndexOf("|")); // country|platform
+    const prior = byCell2.get(cp)?.shrunk ?? overallRate;
+    c.rate = c.total ? c.active / c.total : 0;
+    c.shrunk = shrinkToward(c.active, c.total, prior);
+  });
 
   const rateForTimezone = (timeZone: string | null): CountryRate | null => {
     const country = getCountryFromTimezone(timeZone ?? "") || "Unknown";
@@ -131,15 +159,15 @@ export async function fetchCountryConversionRates(): Promise<CountryConvData> {
       const plat = platKey(meta.platform);
       const bucket = ageBucket(meta.age);
 
-      // Finest reliable cell wins: country×platform×age → country×platform → country.
+      // Finest cell that exists wins — shrinkage already tempers thin cells.
       const cell3 = byCell3.get(`${country}|${plat}|${bucket}`);
       const cell2 = byCell2.get(`${country}|${plat}`);
       let chosen: CountryRate;
       let anchorLevel: BlendedEstimate["anchorLevel"];
-      if (cell3 && cell3.total >= MIN_AGE_CELL) {
+      if (cell3) {
         chosen = cell3;
         anchorLevel = "country+platform+age";
-      } else if (cell2 && cell2.total >= MIN_PLAT_CELL) {
+      } else if (cell2) {
         chosen = cell2;
         anchorLevel = "country+platform";
       } else {
@@ -147,8 +175,9 @@ export async function fetchCountryConversionRates(): Promise<CountryConvData> {
         anchorLevel = "country";
       }
       return {
-        blended: chosen.rate,
-        countryRate: chosen.rate,
+        blended: chosen.shrunk,
+        countryRate: chosen.shrunk,
+        rawRate: chosen.rate,
         country,
         platform: plat,
         ageBucket: bucket,

@@ -1001,7 +1001,7 @@ const TrialRetention: React.FC = () => {
                     return (
                       <span
                         className={`user-conv-badge user-conv-badge--${variant}`}
-                        title={`Empirical conversion rate for ${cohort}: ${est.active.toLocaleString()} active ÷ ${est.total.toLocaleString()} users (incl. free) = ${pct.toFixed(2)}%. Grounds country, platform and age in real data. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
+                        title={`Conversion estimate ${pct.toFixed(2)}% for ${cohort}: ${est.active.toLocaleString()} of ${est.total.toLocaleString()} ever converted (${(est.rawRate * 100).toFixed(2)}% raw), regularized toward the broader rate to ${pct.toFixed(2)}% (thin cells shrink more). Country, platform and age grounded in real data. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
                       >
                         {pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%
                       </span>

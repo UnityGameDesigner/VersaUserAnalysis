@@ -848,7 +848,7 @@ const TranscriptCard: React.FC<{
                 return (
                   <span
                     className={`user-conv-badge user-conv-badge--${m.variant}`}
-                    title={`Empirical conversion rate for users like this one — ${cohort}: ${est.active.toLocaleString()} active ÷ ${est.total.toLocaleString()} users (incl. free) = ${pct.toFixed(2)}%. Grounds country, platform (iOS vs Android) and age in real data. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
+                    title={`Conversion estimate ${pct.toFixed(2)}% — users like this one (${cohort}): ${est.active.toLocaleString()} of ${est.total.toLocaleString()} ever converted (${(est.rawRate * 100).toFixed(2)}% raw), regularized toward the broader rate to ${pct.toFixed(2)}% (thin cells shrink more). Grounds country, platform (iOS vs Android) and age in real data. Overall base ${(overall * 100).toFixed(2)}%. A lean, not a certainty.`}
                   >
                     ≈ {pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%
                   </span>
