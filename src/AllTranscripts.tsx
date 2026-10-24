@@ -551,6 +551,7 @@ const TranscriptCard: React.FC<{
   const [copiedText, setCopiedText] = useState(false);
   const [translation, setTranslation] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
   // Per-message translations of the conversation, indexed to match `messages`.
   const [convTranslations, setConvTranslations] = useState<string[] | null>(null);
   const [showConvTranslation, setShowConvTranslation] = useState(false);
@@ -575,9 +576,14 @@ const TranscriptCard: React.FC<{
     if (!row.user_improvement_feedback) return;
     if (translation) { setTranslation(null); return; }
     setTranslating(true);
+    setTranslateError(null);
     try {
       const result = await translateText(row.user_improvement_feedback);
       setTranslation(result);
+    } catch (e) {
+      // Surface the failure instead of silently leaving the button in its idle
+      // state (which looked like the click did nothing).
+      setTranslateError(e instanceof Error ? e.message : "Translation failed");
     } finally {
       setTranslating(false);
     }
@@ -1024,6 +1030,9 @@ const TranscriptCard: React.FC<{
           >
             {translating ? "Translating…" : translation ? "Hide Translation" : "Translate"}
           </button>
+          {translateError && (
+            <span className="transcript-translate-error">{translateError}</span>
+          )}
           {translation && (
             <div style={{ marginTop: "0.35rem", color: "#6b7280", fontStyle: "italic" }}>
               <strong style={{ fontStyle: "normal" }}>Translation:</strong> {translation}

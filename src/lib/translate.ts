@@ -1,12 +1,33 @@
-// Translate arbitrary-language text to English via the dev server's
-// /api/translate proxy (vite.config.ts), which forwards to Google's public gtx
-// endpoint server-side. gtx is used because it auto-detects the source language
-// (sl=auto) — MyMemory has no auto-detect and 403s without one, a non-starter
-// for transcripts in any language. The proxy is required because the browser
-// can't call gtx directly: it sends no CORS headers, so a direct fetch fails
-// with "TypeError: Failed to fetch". The proxy returns the raw gtx JSON verbatim.
+// Translate arbitrary-language text to English.
+//
+// Primary path: Gemini flash-lite via the dev server's /api/translate-batch
+// (vite.config.ts), called with a one-item array. It's reliable — no per-IP quota.
+//
+// Fallback: Google's public gtx endpoint via the /api/translate proxy. gtx
+// auto-detects the source language (sl=auto) but rate-limits per IP (HTTP 429),
+// and once an IP is throttled it stays throttled for a long time — which is why
+// gtx can't be the primary path anymore. The proxy is still required because the
+// browser can't call gtx directly (no CORS headers → "TypeError: Failed to fetch").
 export async function translateText(text: string): Promise<string> {
   if (!text.trim()) return text;
+  let geminiErr: unknown;
+  try {
+    const [out] = await geminiBatch([text]);
+    return out;
+  } catch (e) {
+    geminiErr = e;
+  }
+  try {
+    return await translateGtx(text);
+  } catch {
+    // Report the primary (Gemini) failure — the gtx error is almost always a
+    // generic 429 that says nothing useful.
+    throw geminiErr instanceof Error ? geminiErr : new Error("Translation failed");
+  }
+}
+
+// gtx path. The proxy returns the raw gtx JSON verbatim.
+async function translateGtx(text: string): Promise<string> {
   // Abort a hung request so a stalled translation can't block a caller (e.g. the
   // Feedback tab's worker pool) indefinitely — let it fail fast and retry.
   // gtx rate-limits bursts (HTTP 429). Retry a few times with exponential
