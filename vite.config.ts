@@ -25,7 +25,10 @@ function tutorEvalVertexProxy(
   // just drops this judge.
   const cModel = claudeModel || 'claude-sonnet-5'
   const cLocation = claudeLocation || 'us-east5'
-  let clientPromise: Promise<import('@google/genai').GoogleGenAI> | null = null
+  // Gemini clients, cached per Vertex location (a client is bound to one location;
+  // the eval panel can request a different model/location per judge — e.g. the
+  // latest flash is only served from the `global` endpoint).
+  const clients = new Map<string, Promise<import('@google/genai').GoogleGenAI>>()
 
   // Vertex access token for the raw Anthropic endpoint (the @google/genai client
   // only speaks Gemini). Reuses the same service-account key file as Gemini, or
@@ -86,21 +89,25 @@ function tutorEvalVertexProxy(
     if (textBlock?.text) return textBlock.text
     throw new Error('Claude returned no structured evaluation.')
   }
-  const getClient = () => {
-    clientPromise ??= import('@google/genai').then(
-      ({ GoogleGenAI }) =>
-        new GoogleGenAI({
-          vertexai: true,
-          project: projectId,
-          location,
-          // Point GOOGLE_APPLICATION_CREDENTIALS at a service-account key file to
-          // authenticate without the periodic `gcloud auth application-default
-          // login` reauth that user credentials (ADC type "authorized_user")
-          // require. Falls back to gcloud ADC when the var is unset.
-          ...(keyFile ? { googleAuthOptions: { keyFilename: keyFile } } : {}),
-        }),
-    )
-    return clientPromise
+  const getClient = (loc: string = location) => {
+    let c = clients.get(loc)
+    if (!c) {
+      c = import('@google/genai').then(
+        ({ GoogleGenAI }) =>
+          new GoogleGenAI({
+            vertexai: true,
+            project: projectId,
+            location: loc,
+            // Point GOOGLE_APPLICATION_CREDENTIALS at a service-account key file to
+            // authenticate without the periodic `gcloud auth application-default
+            // login` reauth that user credentials (ADC type "authorized_user")
+            // require. Falls back to gcloud ADC when the var is unset.
+            ...(keyFile ? { googleAuthOptions: { keyFilename: keyFile } } : {}),
+          }),
+      )
+      clients.set(loc, c)
+    }
+    return c
   }
 
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
@@ -113,7 +120,8 @@ function tutorEvalVertexProxy(
     for await (const chunk of req) chunks.push(chunk as Buffer)
     res.setHeader('Content-Type', 'application/json')
     try {
-      const { system, prompt, schema, provider } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      const { system, prompt, schema, provider, model: reqModel, location: reqLocation } =
+        JSON.parse(Buffer.concat(chunks).toString('utf8'))
       // Second judge in the eval panel: Claude on Vertex. Handled separately so a
       // failure (e.g. no Sonnet quota) returns its real status without touching the
       // Gemini client.
@@ -128,9 +136,13 @@ function tutorEvalVertexProxy(
         }
         return
       }
-      const ai = await getClient()
+      // A judge may override the Gemini model + location (e.g. gemini-flash-latest on
+      // the `global` endpoint) to compare models; defaults to the configured pair.
+      const useLocation = typeof reqLocation === 'string' && reqLocation ? reqLocation : location
+      const useModel = typeof reqModel === 'string' && reqModel ? reqModel : model
+      const ai = await getClient(useLocation)
       const response = await ai.models.generateContent({
-        model,
+        model: useModel,
         contents: prompt,
         config: {
           systemInstruction: system,
@@ -140,7 +152,7 @@ function tutorEvalVertexProxy(
       })
       res.end(JSON.stringify({ text: response.text ?? null }))
     } catch (e) {
-      clientPromise = null // a failed client (e.g. expired ADC) shouldn't be reused
+      clients.clear() // a failed client (e.g. expired ADC) shouldn't be reused
       const status = (e as { status?: number }).status
       res.statusCode = typeof status === 'number' ? status : 500
       let msg = e instanceof Error ? e.message : String(e)
@@ -188,7 +200,7 @@ function tutorEvalVertexProxy(
       const translations = JSON.parse(response.text ?? '[]')
       res.end(JSON.stringify({ translations }))
     } catch (e) {
-      clientPromise = null
+      clients.clear()
       const status = (e as { status?: number }).status
       res.statusCode = typeof status === 'number' ? status : 500
       res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }))
@@ -224,7 +236,7 @@ function tutorEvalVertexProxy(
       })
       res.end(JSON.stringify({ text: response.text ?? '' }))
     } catch (e) {
-      clientPromise = null
+      clients.clear()
       const status = (e as { status?: number }).status
       res.statusCode = typeof status === 'number' ? status : 500
       res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }))

@@ -149,9 +149,13 @@ interface Judge {
   label: string;
   provider: "gemini" | "claude";
   primary: boolean; // the panel needs at least the primary judge to succeed
+  model?: string; // optional Gemini model override (else the server default)
+  location?: string; // optional Vertex location override (some models are region-specific)
 }
 const JUDGES: Judge[] = [
-  { id: "gemini", label: "Gemini", provider: "gemini", primary: true },
+  { id: "gemini25", label: "Gemini 2.5 Flash", provider: "gemini", primary: true },
+  // The latest flash alias — only served from the `global` endpoint on this project.
+  { id: "geminilatest", label: "Gemini Flash (latest)", provider: "gemini", model: "gemini-flash-latest", location: "global", primary: false },
   { id: "sonnet", label: "Sonnet 5", provider: "claude", primary: false },
 ];
 // Secondary judges that failed with a model-unavailable status this session —
@@ -318,7 +322,14 @@ async function runJudge(judge: Judge, prompt: string): Promise<TutorEvaluation> 
   const res = await fetch("/api/evaluate-tutor", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system: SYSTEM_PROMPT, prompt, schema: EVAL_SCHEMA, provider: judge.provider }),
+    body: JSON.stringify({
+      system: SYSTEM_PROMPT,
+      prompt,
+      schema: EVAL_SCHEMA,
+      provider: judge.provider,
+      ...(judge.model ? { model: judge.model } : {}),
+      ...(judge.location ? { location: judge.location } : {}),
+    }),
   });
 
   let payload: unknown;
