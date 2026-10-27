@@ -30,6 +30,11 @@ interface RecentUser {
   level: string | null;
   reason: string | null;
   attribution: string | null;
+  // The creator deeplink slug (/c/<slug> or /g/<slug>) the install was
+  // attributed to, resolved by the app from the deferred deeplink. Distinct
+  // from `attribution` (the self-reported "how did you hear about us" channel),
+  // which is null for deeplink installs.
+  creator_slug: string | null;
   platform: string | null;
   payment_status: string | null;
 }
@@ -219,7 +224,7 @@ const RecentUsers: React.FC = () => {
               .from("user_info")
               .select(
                 `user_id, preferred_name, age, gender, time_zone, native_language,
-                 learning_language, level, reason, attribution, platform, payment_status`,
+                 learning_language, level, reason, attribution, creator_slug, platform, payment_status`,
               )
               .in("user_id", batch),
           ),
@@ -360,6 +365,15 @@ const RecentUsers: React.FC = () => {
   }, [filteredUsers]);
   const attributionDistribution = useMemo(
     () => buildDistribution(filteredUsers, (u) => u.attribution || "Unknown"),
+    [filteredUsers],
+  );
+  // Which creator deeplink brought each user in. Users with no slug came through
+  // a non-deeplink channel (organic, ads, direct store search, etc.).
+  const creatorSlugDistribution = useMemo(
+    () =>
+      buildDistribution(filteredUsers, (u) =>
+        u.creator_slug && u.creator_slug.trim() ? u.creator_slug.trim() : "Organic / no deeplink",
+      ),
     [filteredUsers],
   );
   const platformDistribution = useMemo(
@@ -597,6 +611,7 @@ const RecentUsers: React.FC = () => {
             <BreakdownCard title="Level" data={levelDistribution} color="#f59e0b" />
             <BreakdownCard title="Reason for Learning" data={reasonDistribution} color="#f97316" limit={12} />
             <BreakdownCard title="Acquisition Channel" data={attributionDistribution} color="#10b981" limit={12} />
+            <BreakdownCard title="Creator Deeplink" data={creatorSlugDistribution} color="#e11d48" limit={12} />
             <BreakdownCard title="Platform" data={platformDistribution} color="#64748b" />
             <BreakdownCard title="Payment Status" data={statusDistribution} color="#22c55e" />
           </div>
