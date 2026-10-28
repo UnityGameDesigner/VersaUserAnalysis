@@ -104,3 +104,57 @@ language sql stable security definer set search_path = public as $$
   order by ur.gross_usd desc, ur.last_paid_at desc nulls last, ur.user_id  -- total order: the client pages this
   limit p_limit;
 $$;
+
+-- Paying subscribers per day, with the day's gains and losses.
+-- A paid initial_purchase / renewal covers [purchased_at, purchased_at + period);
+-- a refund cuts its coverage short at the refund date. Coverage is merged per
+-- subscriber (platform + user, falling back to the store ids for anonymous
+-- buyers), bridging gaps of <= 3 days so a late renewal isn't a churn + rejoin.
+-- Subscriptions that started before the 2026-03-01 backfill show up only when
+-- they renew; when that renewal's period reaches back to the backfill start
+-- they are counted as already active on 2026-03-01 rather than as a gain.
+-- Yearly plans bought before 2026-03 and not yet renewed are invisible, so
+-- `active` is a floor. The series stops 3 days before the newest transaction
+-- so a pending renewal isn't counted as a loss.
+create or replace function public.revenue_subscribers_daily(p_platform text default null)
+returns table (day date, active int, gained int, lost int)
+language sql stable security definer set search_path = public as $$
+  with cov as (
+    select st.platform || ':' || coalesce(st.user_id::text, st.app_user_id, st.original_transaction_id, st.transaction_id) as sub_key,
+           st.event,
+           st.purchased_at::date as s,
+           least((st.purchased_at + len)::date, coalesce(r.purchased_at::date, 'infinity'::date)) as e,
+           len
+    from subscription_transactions st
+    join subscription_products sp on sp.product_id = st.product_id
+    cross join lateral (select case sp.period when 'week' then interval '1 week'
+                                              when 'month' then interval '1 month'
+                                              when 'year' then interval '1 year' end * sp.period_count as len) l
+    left join subscription_transactions r on r.transaction_id = st.transaction_id and r.event = 'refund'
+    where st.event in ('initial_purchase', 'renewal') and st.price_usd > 0 and len is not null
+      and (p_platform is null or st.platform = p_platform)
+  ), ordered as (
+    select *, max(e) over (partition by sub_key order by s, e rows between unbounded preceding and 1 preceding) as prev_e
+    from cov where e > s
+  ), islands as (
+    select *, sum(case when prev_e is null or s > prev_e + 3 then 1 else 0 end)
+                over (partition by sub_key order by s, e) as island
+    from ordered
+  ), spans as (
+    select min(s) as s, max(e) as e,
+           (array_agg(event order by s, e))[1] = 'renewal'
+             and (min(s) - (array_agg(len order by s, e))[1])::date <= date '2026-03-04' as carried_in
+    from islands group by sub_key, island
+  ), days as (
+    select d::date as day
+    from generate_series(date '2026-03-01',
+                         (select max(purchased_at)::date - 3 from subscription_transactions), interval '1 day') d
+  )
+  select d.day,
+         (count(*) filter (where (case when sp.carried_in then date '2026-03-01' else sp.s end) <= d.day and sp.e > d.day))::int,
+         (count(*) filter (where sp.s = d.day and not sp.carried_in))::int,
+         (count(*) filter (where sp.e = d.day))::int
+  from days d cross join spans sp
+  group by d.day
+  order by d.day;
+$$;

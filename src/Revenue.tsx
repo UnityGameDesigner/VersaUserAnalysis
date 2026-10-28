@@ -3,6 +3,10 @@ import { supabase } from "./lib/supabase";
 import {
   BarChart,
   Bar,
+  ComposedChart,
+  Line,
+  LineChart,
+  ReferenceLine,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -16,7 +20,7 @@ import { format } from "date-fns";
 // subscription_transactions / subscription_products tables (backfilled from
 // Superwall ClickHouse, purchases since 2026-03-01, store-vs-RevenueCat
 // duplicates removed by transactionId) through the revenue_monthly,
-// revenue_by_plan and revenue_users RPCs (supabase/sql/revenue_page.sql).
+// revenue_by_plan, revenue_users and revenue_subscribers_daily RPCs (supabase/sql/revenue_page.sql).
 
 type Platform = "all" | "ios" | "android";
 type Money = "gross" | "net";
@@ -63,6 +67,19 @@ interface UserRow {
   first_paid_at: string | null;
   last_paid_at: string | null;
 }
+
+interface SubDayRow {
+  day: string;
+  active: number;
+  gained: number;
+  lost: number;
+}
+
+type SubRange = 30 | 90 | 0; // days shown; 0 = everything since Mar 1
+
+// Gains and losses are a polarity, so they get the two poles of a diverging pair.
+const GAINED_COLOR = "#2a78d6";
+const LOST_COLOR = "#eb6834";
 
 // Fixed order = fixed color: a bucket keeps its hue whatever the filter shows.
 const BUCKETS = ["Monthly", "Yearly", "3-month", "Weekly", "One-off"] as const;
@@ -121,6 +138,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
   const [userSort, setUserSort] = useState<UserSort>("gross");
   const [search, setSearch] = useState("");
   const [payersOnly, setPayersOnly] = useState(true);
+  const [subDays, setSubDays] = useState<SubDayRow[]>([]);
+  const [subRange, setSubRange] = useState<SubRange>(90);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -140,12 +159,21 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         }
       };
       // Any rpc() error must surface — an error read as "empty" looks like "no revenue".
-      const [m, p, u] = await Promise.all([
+      const [m, p, u, sd] = await Promise.all([
         supabase.rpc("revenue_monthly", { p_platform }),
         supabase.rpc("revenue_by_plan", { p_platform }),
         fetchUsers(),
+        supabase.rpc("revenue_subscribers_daily", { p_platform }),
       ]);
-      for (const r of [m, p, u]) if (r.error) throw new Error(r.error.message);
+      for (const r of [m, p, u, sd]) if (r.error) throw new Error(r.error.message);
+      setSubDays(
+        (sd.data ?? []).map((r: Record<string, unknown>) => ({
+          day: String(r.day),
+          active: num(r.active),
+          gained: num(r.gained),
+          lost: num(r.lost),
+        })),
+      );
       setMonths(
         (m.data ?? []).map((r: Record<string, unknown>) => ({
           month: String(r.month),
@@ -197,6 +225,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
       setMonths([]);
       setPlans([]);
       setUsers([]);
+      setSubDays([]);
     } finally {
       setLoading(false);
     }
@@ -226,6 +255,26 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
     }
     return [...byMonth.values()].sort((a, b) => String(a.month).localeCompare(String(b.month)));
   }, [months, money]);
+
+  // Losses plot below zero; the first day is the carried-in base, not a change.
+  const subChart = useMemo(() => {
+    const rows = subDays.slice(1).map((d) => ({
+      ...d,
+      label: format(new Date(`${d.day}T00:00:00`), "MMM d"),
+      lostNeg: -d.lost,
+      net: d.gained - d.lost,
+    }));
+    return subRange ? rows.slice(-subRange) : rows;
+  }, [subDays, subRange]);
+
+  const subSummary = useMemo(() => {
+    if (subChart.length === 0) return null;
+    const first = subChart[0];
+    const last = subChart[subChart.length - 1];
+    const gained = subChart.reduce((a, r) => a + r.gained, 0);
+    const lost = subChart.reduce((a, r) => a + r.lost, 0);
+    return { start: first.active + first.lost - first.gained, end: last.active, gained, lost, lastDay: last.day };
+  }, [subChart]);
 
   const bucketsShown = useMemo(() => BUCKETS.filter((b) => months.some((m) => m.bucket === b)), [months]);
 
@@ -405,6 +454,113 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
               </ResponsiveContainer>
             </div>
           </div>
+
+          {subSummary && (
+            <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+              <div
+                className="ret-chart-head"
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}
+              >
+                <h3>Paying subscribers per day</h3>
+                <div className="ret-seg" role="group" aria-label="Date range">
+                  {([30, 90, 0] as SubRange[]).map((r) => (
+                    <button
+                      key={r}
+                      className={`ret-seg-btn${subRange === r ? " ret-seg-btn--on" : ""}`}
+                      onClick={() => setSubRange(r)}
+                    >
+                      {r ? `${r} days` : "Since Mar 1"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="ret-chart-sub">
+                {subSummary.start.toLocaleString()} → <strong>{subSummary.end.toLocaleString()}</strong> paying
+                subscribers ({subSummary.end - subSummary.start >= 0 ? "+" : ""}
+                {(subSummary.end - subSummary.start).toLocaleString()}): {subSummary.gained.toLocaleString()} started
+                paying, {subSummary.lost.toLocaleString()} lapsed. A subscriber counts from a paid charge until that
+                period runs out without a renewal (3-day grace), or until a refund. Includes buyers not linked to a
+                user. Yearly plans bought before Mar 2026 and not yet renewed are missing, so the total is a floor.
+                Data through {format(new Date(`${subSummary.lastDay}T00:00:00`), "MMM d, yyyy")}.
+              </p>
+              <div style={{ width: "100%", height: 200 }}>
+                <ResponsiveContainer>
+                  <LineChart data={subChart} syncId="subs" margin={{ top: 10, right: 20, bottom: 0, left: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} minTickGap={24} />
+                    <YAxis tick={{ fontSize: 12 }} width={64} domain={["auto", "auto"]} />
+                    <Tooltip
+                      formatter={(v: number | undefined) => [Number(v ?? 0).toLocaleString(), "Paying subscribers"]}
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="active"
+                      stroke="#0f172a"
+                      strokeWidth={2}
+                      dot={false}
+                      isAnimationActive={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ width: "100%", height: 220 }}>
+                <ResponsiveContainer>
+                  <ComposedChart
+                    data={subChart}
+                    syncId="subs"
+                    stackOffset="sign"
+                    margin={{ top: 10, right: 20, bottom: 8, left: 8 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} minTickGap={24} />
+                    <YAxis tick={{ fontSize: 12 }} width={64} allowDecimals={false} />
+                    <ReferenceLine y={0} stroke="#94a3b8" />
+                    <Tooltip
+                      formatter={(v: number | undefined, name) => {
+                        const n = Number(v ?? 0);
+                        if (name === "Lapsed") return [(-n).toLocaleString(), String(name)];
+                        return [`${name === "Net change" && n > 0 ? "+" : ""}${n.toLocaleString()}`, String(name)];
+                      }}
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      cursor={{ fill: "rgba(15, 23, 42, 0.04)" }}
+                    />
+                    <Legend
+                      wrapperStyle={{ fontSize: 12 }}
+                      itemSorter={(item) => ["Started paying", "Lapsed", "Net change"].indexOf(String(item.value))}
+                    />
+                    <Bar
+                      dataKey="gained"
+                      name="Started paying"
+                      stackId="chg"
+                      fill={GAINED_COLOR}
+                      radius={[2, 2, 0, 0]}
+                      isAnimationActive={false}
+                      maxBarSize={18}
+                    />
+                    <Bar
+                      dataKey="lostNeg"
+                      name="Lapsed"
+                      stackId="chg"
+                      fill={LOST_COLOR}
+                      radius={[2, 2, 0, 0]}
+                      isAnimationActive={false}
+                      maxBarSize={18}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="net"
+                      name="Net change"
+                      stroke="#0f172a"
+                      strokeWidth={2}
+                      dot={false}
+                      isAnimationActive={false}
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
 
           <div className="chart-container" style={{ marginTop: "1.25rem" }}>
             <div className="ret-chart-head">
