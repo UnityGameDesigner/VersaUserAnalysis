@@ -67,8 +67,11 @@ interface UserRow {
   refunds: number;
   first_paid_at: string | null;
   last_paid_at: string | null;
-  // 0-100 from lesson history; active days dominate (see revenue_user_retention).
+  // 0-100 from lessons since subscribing; active days dominate, measured against
+  // a target that grows with time subscribed (see revenue_user_retention).
   retention: number;
+  tenure_days: number | null;
+  target_days: number | null;
   active_days: number;
   lessons: number;
   avg_lesson_min: number | null;
@@ -241,6 +244,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
             first_paid_at: (r.first_paid_at as string) ?? null,
             last_paid_at: (r.last_paid_at as string) ?? null,
             retention: num(e?.score),
+            tenure_days: e?.tenure_days == null ? null : Number(e.tenure_days),
+            target_days: e?.target_days == null ? null : Number(e.target_days),
             active_days: num(e?.active_days),
             lessons: num(e?.lessons),
             avg_lesson_min: e?.avg_lesson_min == null ? null : Number(e.avg_lesson_min),
@@ -756,7 +761,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       <th
                         style={sortTh(userSort === "retention")}
                         onClick={() => setUserSort("retention")}
-                        title="0–100. Active days (60 pts, full at 30 days) + avg lesson length (15, full at 10 min) + share of lessons finished (15) + recency (10, full within 7 days, 0 after 30). Onboarding and silent lessons don't count."
+                        title="0–100, from lessons since subscribing. Active days (60 pts, full at 1 active day per 3 days subscribed, capped at 30 — so new subscribers aren't marked down) + avg lesson length (15, full at 10 min) + share of lessons finished (15) + recency (10, full within 7 days, 0 after 30). Onboarding and silent lessons don't count."
                       >
                         Retention
                       </th>
@@ -818,11 +823,12 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                             style={{ whiteSpace: "nowrap" }}
                             title={
                               u.lessons
-                                ? `${u.active_days} active days · ${u.lessons} lessons · ` +
+                                ? `${u.active_days} of ${u.target_days} target active days ` +
+                                  `(subscribed ${u.tenure_days} days) · ${u.lessons} lessons · ` +
                                   `avg ${u.avg_lesson_min ?? "—"} min · ` +
                                   `${u.completion_rate == null ? "—" : Math.round(u.completion_rate * 100) + "%"} finished · ` +
                                   `last lesson ${fmtDate(u.last_lesson_at)}`
-                                : "No lessons with the user speaking"
+                                : "No lessons with the user speaking since subscribing"
                             }
                           >
                             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -839,7 +845,9 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                               </div>
                             </div>
                             <div style={{ fontSize: 11, color: "#6b7280" }}>
-                              {u.lessons ? `${u.active_days} days · ${u.lessons} lessons` : "no lessons"}
+                              {u.lessons
+                                ? `${u.active_days}/${u.target_days} days · ${u.tenure_days}d subscribed`
+                                : "no lessons"}
                             </div>
                           </td>
                         </tr>

@@ -106,10 +106,16 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- Retention score per identified user (same population as revenue_users),
--- 0-100, from their lesson history. Onboarding lesson 42 and silent lessons
--- (no user turn) don't count. Active days are the main factor:
---   60  active days: distinct UTC days with a lesson, log-scaled, full at 30
---       (1 day = 12, 3 = 24, 7 = 36, 14 = 47)
+-- 0-100, from their lessons since they subscribed (earliest of trial start,
+-- first store transaction, first payment; lessons up to a day before count,
+-- since many start a lesson right before the paywall). Onboarding lesson 42
+-- and silent lessons (no user turn) don't count. Active days are the main factor:
+--   60  active days: distinct UTC days with a lesson, log-scaled against a
+--       target that grows with time subscribed — 1 active day per 3 days,
+--       capped at 30 (reached at 90 days subscribed), at least 1 — so a new
+--       subscriber isn't marked down for not having had time yet. Once
+--       90+ days in: 1 day = 12, 3 = 24, 7 = 36, 14 = 47, 30 = 60. (1 in 3
+--       days is roughly the 95th percentile of established subscribers.)
 --   15  lesson length: avg minutes, full at 10. Measured from turn_metrics
 --       timestamps where present, else 0.5 min per spoken user turn (fits the
 --       measured lessons at r = 0.89); lessons with neither are skipped
@@ -122,7 +128,14 @@ $$;
 create or replace function public.revenue_user_retention(p_platform text default null)
 returns json
 language sql stable security definer set search_path = public as $$
-  with l as (
+  with subs as (
+    select ur.user_id,
+           least(ur.first_paid_at, ui.trial_started_at,
+                 (select min(t.purchased_at) from subscription_transactions t where t.user_id = ur.user_id)) as sub_start
+    from user_revenue ur
+    left join user_info ui on ui.user_id = ur.user_id
+    where p_platform is null or ur.platform = p_platform
+  ), l as (
     select cl.user_id, cl.created_at, cl.ended_early, cl.exit_phase, m.measured_min,
            -- '"role":"user"' substrings: json keeps the raw text, and this
            -- matches json_array_elements exactly (checked 2026-10-29) without
@@ -132,15 +145,15 @@ language sql stable security definer set search_path = public as $$
                      and json_typeof(cl.conversation_transcript) = 'array' then
              (length(cl.conversation_transcript::text)
               - length(replace(cl.conversation_transcript::text, '"role":"user"', ''))) / 13 end as user_turns
-    from user_revenue ur
-    join completed_lessons cl on cl.user_id = ur.user_id
+    from subs su
+    join completed_lessons cl on cl.user_id = su.user_id
+      and cl.created_at >= su.sub_start - interval '1 day'
     cross join lateral (
       select case when jsonb_typeof(cl.turn_metrics) = 'array' and jsonb_array_length(cl.turn_metrics) > 1 then
                (select max((x->>'received_at')::numeric) - min((x->>'received_at')::numeric)  -- epoch ms
                 from jsonb_array_elements(cl.turn_metrics) x) / 60000 end as measured_min
     ) m
     where cl.lesson_id is distinct from 42
-      and (p_platform is null or ur.platform = p_platform)
   ), eng as (
     select user_id,
            count(distinct (created_at at time zone 'UTC')::date)::int as active_days,
@@ -152,21 +165,29 @@ language sql stable security definer set search_path = public as $$
     where coalesce(exit_phase, '') not in ('connected_no_user_turn', 'never_connected')
       and coalesce(user_turns, 1) > 0
     group by user_id
+  ), scored as (
+    select e.*, su.sub_start,
+           extract(epoch from now() - su.sub_start) / 86400 as tenure_days,
+           greatest(1, least(30, extract(epoch from now() - su.sub_start) / 86400 / 3)) as target_days
+    from eng e join subs su on su.user_id = e.user_id
   )
   select coalesce(json_agg(json_build_object(
            'user_id', user_id,
+           'subscribed_at', sub_start,
+           'tenure_days', floor(tenure_days)::int,
+           'target_days', round(target_days)::int,
            'active_days', active_days,
            'lessons', lessons,
            'avg_lesson_min', round(avg_min, 1),
            'completion_rate', round(completion, 3),
            'last_lesson_at', last_lesson_at,
            'score', round(
-              60 * least(1, ln(1 + active_days) / ln(31))
+              60 * least(1, ln(1 + active_days) / ln(1 + target_days))
               + 15 * least(1, coalesce(avg_min, 0) / 10)
               + 15 * coalesce(completion, 0)
               + 10 * greatest(0, 1 - greatest(0, extract(epoch from now() - last_lesson_at) / 86400 - 7) / 23)
            )::int)), '[]'::json)
-  from eng;
+  from scored;
 $$;
 
 -- Paying subscribers per day, with the day's gains and losses.
