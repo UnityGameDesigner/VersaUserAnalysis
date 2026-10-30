@@ -143,6 +143,77 @@ interface CompletedLesson {
   exit_trigger: string | null;
   early_end_reason: string | null;
   mic_mode: string | null;
+  processing_status: string | null;
+  processing_outcome: string | null;
+}
+
+// Title of the lesson a completed_lessons row was for (lesson_titles RPC,
+// supabase/sql/lesson_titles.sql): a catalog lesson, the user's own custom
+// lesson, or a generated daily lesson.
+interface LessonTitle {
+  title: string | null;
+  kind: "catalog" | "custom" | "daily";
+}
+
+const LESSON_KIND_LABEL: Record<LessonTitle["kind"], string> = {
+  catalog: "Catalog",
+  custom: "Custom",
+  daily: "Daily",
+};
+
+// The post-lesson feedback the app generates into completed_lessons.phrase_feedback.
+interface LessonFeedback {
+  score: number | null;
+  reasoning: string;
+  userExample: string;
+  improvedExample: string;
+  tutorExplanation: string;
+  conversation: { tutorSaid: string; userResponded: string; improvedResponse: string; explanation: string }[];
+  vocabulary: { term: string; definition: string }[];
+}
+
+// phrase_feedback is usually a JSON string holding the JSON object (double
+// encoded); older rows may hold the object directly. Null when there's none.
+function parseFeedback(raw: unknown): LessonFeedback | null {
+  let v: unknown = raw;
+  for (let i = 0; i < 2 && typeof v === "string"; i++) {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const str = (x: unknown) => (typeof x === "string" ? x : "");
+  const arr = (x: unknown) =>
+    (Array.isArray(x) ? x : []).filter((e): e is Record<string, unknown> => !!e && typeof e === "object");
+  const fb: LessonFeedback = {
+    score: typeof o.overallConversationScore === "number" ? o.overallConversationScore : null,
+    reasoning: str(o.reasoningForScore),
+    userExample: str(o.userExample),
+    improvedExample: str(o.improvedExample),
+    tutorExplanation: str(o.tutorExplanation),
+    conversation: arr(o.conversationFeedback).map((e) => ({
+      tutorSaid: str(e.tutorSaid),
+      userResponded: str(e.userResponded),
+      improvedResponse: str(e.improvedResponse),
+      explanation: str(e.explanation),
+    })),
+    vocabulary: arr(o.vocabularyBank)
+      .map((e) => ({ term: str(e.term), definition: str(e.definition) }))
+      .filter((e) => e.term),
+  };
+  const empty =
+    fb.score == null && !fb.reasoning && !fb.improvedExample && !fb.conversation.length && !fb.vocabulary.length;
+  return empty ? null : fb;
+}
+
+// Why a lesson has no feedback, as far as the row can tell.
+function noFeedbackReason(c: CompletedLesson): string {
+  if (c.processing_outcome === "insufficient_speech") return "No feedback — the learner didn't say enough";
+  if (c.processing_status === "failed") return "No feedback — post-lesson processing failed";
+  return "No feedback was stored for this lesson";
 }
 
 const NOTIF_STATUS_META: Record<string, { label: string; color: string }> = {
@@ -832,8 +903,14 @@ const CancellationCard: React.FC<{
   );
 };
 
-const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ lesson: c, user }) => {
+const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo; title?: LessonTitle }> = ({
+  lesson: c,
+  user,
+  title,
+}) => {
   const [open, setOpen] = useState(false);
+  const feedback = useMemo(() => parseFeedback(c.phrase_feedback), [c.phrase_feedback]);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
   const messages = parseTranscript(c.conversation_transcript);
 
@@ -961,7 +1038,14 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
   return (
     <div className="lesson-card">
       <div className="lesson-card-header">
-        <span className="lesson-card-lesson-id">Lesson #{c.lesson_id}</span>
+        <span className="lesson-card-lesson-id" title={`lesson_id ${c.lesson_id}`}>
+          {title?.title || `Lesson #${c.lesson_id}`}
+          {title && (
+            <span style={{ fontWeight: 400, color: "#9ca3af", marginLeft: 6 }}>
+              {LESSON_KIND_LABEL[title.kind]} · #{c.lesson_id}
+            </span>
+          )}
+        </span>
         <span className="lesson-card-date">
           {format(new Date(c.created_at), "MMM d, yyyy h:mm a")}
         </span>
@@ -981,6 +1065,24 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
           </span>
         )}
         <LessonBadges row={c} messages={messages} />
+        {feedback ? (
+          <button
+            className="lesson-card-badge"
+            style={{ background: "#ecfdf5", color: "#047857", border: "1px solid #a7f3d0", cursor: "pointer" }}
+            onClick={() => setFeedbackOpen((v) => !v)}
+            title="The post-lesson feedback the app generated (phrase_feedback). Click to show it."
+          >
+            ✓ Feedback{feedback.score != null ? ` ${feedback.score}/10` : ""}
+          </button>
+        ) : (
+          <span
+            className="lesson-card-badge"
+            style={{ background: "#f3f4f6", color: "#6b7280", border: "1px solid #e5e7eb" }}
+            title={noFeedbackReason(c)}
+          >
+            No feedback
+          </span>
+        )}
         {messages.length > 0 && (
           <button
             className="transcript-toggle"
@@ -1084,6 +1186,57 @@ const LessonCard: React.FC<{ lesson: CompletedLesson; user: UserInfo }> = ({ les
         </div>
       )}
 
+      {feedbackOpen && feedback && (
+        <div className="lesson-card-feedback" style={{ display: "grid", gap: "0.6rem" }}>
+          <div>
+            <strong>Generated feedback{feedback.score != null ? ` — ${feedback.score}/10` : ""}</strong>
+            {feedback.reasoning && <p style={{ margin: "0.25rem 0 0" }}>{feedback.reasoning}</p>}
+          </div>
+          {feedback.improvedExample && (
+            <div>
+              <div>
+                <span style={{ color: "#b91c1c" }}>✗</span> {feedback.userExample || "—"}
+              </div>
+              <div>
+                <span style={{ color: "#047857" }}>✓</span> {feedback.improvedExample}
+              </div>
+              {feedback.tutorExplanation && (
+                <div style={{ color: "#6b7280", fontSize: 13 }}>{feedback.tutorExplanation}</div>
+              )}
+            </div>
+          )}
+          {feedback.conversation.length > 0 && (
+            <div>
+              <strong>Conversation feedback</strong>
+              {feedback.conversation.map((f, i) => (
+                <div key={i} style={{ marginTop: "0.4rem", paddingLeft: "0.6rem", borderLeft: "2px solid #e5e7eb" }}>
+                  {f.tutorSaid && <div style={{ color: "#6b7280", fontSize: 13 }}>Tutor: {f.tutorSaid}</div>}
+                  {f.userResponded && <div>Learner: {f.userResponded}</div>}
+                  {f.improvedResponse && <div style={{ color: "#047857" }}>Better: {f.improvedResponse}</div>}
+                  {f.explanation && <div style={{ color: "#6b7280", fontSize: 13 }}>{f.explanation}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+          {feedback.vocabulary.length > 0 && (
+            <div>
+              <strong>Vocabulary</strong>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+                {feedback.vocabulary.map((w, i) => (
+                  <span
+                    key={i}
+                    title={w.definition}
+                    style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: "#eef2ff", color: "#4338ca" }}
+                  >
+                    {w.term}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {c.user_improvement_feedback && (
         <div className="lesson-card-feedback">
           <strong>Improvement Feedback:</strong> {c.user_improvement_feedback}
@@ -1106,6 +1259,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
   const [goals, setGoals] = useState<UserGoal[]>([]);
   const [skills, setSkills] = useState<UserSkill[]>([]);
   const [interests, setInterests] = useState<string[]>([]);
+  const [lessonTitles, setLessonTitles] = useState<Map<number, LessonTitle>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
@@ -1163,6 +1317,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
     setError(null);
     setUser(null);
     setLessons([]);
+    setLessonTitles(new Map());
     setNotifications([]);
     setGoals([]);
     setSkills([]);
@@ -1210,7 +1365,8 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
             `id, created_at, user_id, lesson_id, conversation_transcript,
              phrase_feedback, user_improvement_feedback, user_rating_feedback,
              ended_early, payment_status, word_timeline,
-             exit_phase, exit_trigger, early_end_reason, mic_mode`,
+             exit_phase, exit_trigger, early_end_reason, mic_mode,
+             processing_status, processing_outcome`,
           )
           .eq("user_id", trimmed)
           .gt("id", lastId)
@@ -1233,6 +1389,21 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
       );
       setLessons(allLessons);
+
+      // Lesson titles (non-fatal — cards fall back to "Lesson #id").
+      const ids = [...new Set(allLessons.map((l) => l.lesson_id))];
+      if (ids.length) {
+        const { data: titleData, error: titleErr } = await supabase.rpc("lesson_titles", { p_ids: ids });
+        if (titleErr) console.warn("lesson_titles fetch failed:", titleErr.message);
+        setLessonTitles(
+          new Map(
+            ((titleData as { lesson_id: number; title: string | null; kind: LessonTitle["kind"] }[]) ?? []).map((t) => [
+              Number(t.lesson_id),
+              { title: t.title, kind: t.kind },
+            ]),
+          ),
+        );
+      }
 
       // Notifications sent to this user (non-fatal — panel shows none if it fails).
       const { data: notifData, error: notifErr } = await supabase
@@ -1693,7 +1864,9 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                         items.push(marker);
                         placed = true;
                       }
-                      items.push(<LessonCard key={c.id} lesson={c} user={user} />);
+                      items.push(
+                        <LessonCard key={c.id} lesson={c} user={user} title={lessonTitles.get(c.lesson_id)} />,
+                      );
                     });
                     if (!placed && marker) items.push(marker);
                     return items;
