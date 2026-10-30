@@ -31,6 +31,18 @@ import { getCancelAnalysis, saveCancelAnalysis } from "./lib/cancelAnalysisStore
 import LearningJourneyPanel from "./LearningJourneyPanel";
 import { format } from "date-fns";
 
+// A full user id goes straight to the profile; anything else is an email search.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// One row from the lookup_users RPC (supabase/sql/user_lookup_search.sql).
+interface UserMatch {
+  user_id: string;
+  email: string | null;
+  preferred_name: string | null;
+  payment_status: string | null;
+  last_logged_in: string | null;
+}
+
 interface UserInfo {
   user_id: string;
   preferred_name: string | null;
@@ -1097,6 +1109,11 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  // Email search results when more than one user matches; null otherwise.
+  const [matches, setMatches] = useState<UserMatch[] | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  // Latest lookup wins: a slow email fetch for an earlier id mustn't land on a later profile.
+  const lookupSeq = useRef(0);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -1106,10 +1123,42 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
   const [profileNote, setProfileNote] = useState("");
   const [profileNoteOpen, setProfileNoteOpen] = useState(false);
 
-  const handleLookup = async (overrideId?: string) => {
-    const trimmed = (overrideId ?? inputId).trim();
-    if (!trimmed) return;
+  const handleLookup = async (overrideQuery?: string) => {
+    const query = (overrideQuery ?? inputId).trim();
+    if (!query) return;
+    const seq = ++lookupSeq.current;
+    setMatches(null);
+    setUserEmail(null);
 
+    if (UUID_RE.test(query)) {
+      // Email is shown on the profile but isn't on user_info; non-fatal.
+      supabase.rpc("lookup_users", { p_query: query }).then(({ data }) => {
+        if (lookupSeq.current === seq) setUserEmail((data as UserMatch[] | null)?.[0]?.email ?? null);
+      });
+      return loadUser(query);
+    }
+
+    setLoading(true);
+    setError(null);
+    setUser(null);
+    setSearched(true);
+    const { data, error: searchErr } = await supabase.rpc("lookup_users", { p_query: query });
+    if (lookupSeq.current !== seq) return;
+    if (searchErr) {
+      setError(`Email search failed: ${searchErr.message}`);
+      setLoading(false);
+      return;
+    }
+    const rows = (data as UserMatch[]) ?? [];
+    if (rows.length === 1) {
+      setUserEmail(rows[0].email);
+      return loadUser(rows[0].user_id);
+    }
+    setMatches(rows);
+    setLoading(false);
+  };
+
+  const loadUser = async (trimmed: string) => {
     setLoading(true);
     setError(null);
     setUser(null);
@@ -1301,7 +1350,7 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           <input
             className="lookup-input"
             type="text"
-            placeholder="Enter user ID..."
+            placeholder="Enter user ID or email..."
             value={inputId}
             onChange={(e) => setInputId(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleLookup()}
@@ -1422,7 +1471,10 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                   </button>
                 )}
               </div>
-              <p className="lookup-profile-uid">{user.user_id}</p>
+              <p className="lookup-profile-uid">
+                {user.user_id}
+                {userEmail && <> · {userEmail}</>}
+              </p>
               {exportError && (
                 <p className="lookup-export-error">{exportError}</p>
               )}
@@ -1652,13 +1704,50 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
           </>
         )}
 
-        {!loading && searched && !error && !user && (
-          <div className="empty-state">No user found with that ID.</div>
+        {!loading && !error && !user && matches && matches.length > 0 && (
+          <div className="table-container">
+            <p className="ret-chart-sub" style={{ margin: "0 0 0.5rem" }}>
+              {matches.length === 25 ? "First 25 matches" : `${matches.length} matches`} — pick one.
+            </p>
+            <table className="data-table">
+              <thead className="table-head">
+                <tr>
+                  <th>Email</th>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Last logged in</th>
+                </tr>
+              </thead>
+              <tbody className="table-body">
+                {matches.map((m) => (
+                  <tr
+                    key={m.user_id}
+                    className="table-row--clickable"
+                    onClick={() => {
+                      setInputId(m.email ?? m.user_id);
+                      handleLookup(m.user_id);
+                    }}
+                  >
+                    <td>{m.email ?? "—"}</td>
+                    <td>{m.preferred_name || "—"}</td>
+                    <td>{m.payment_status ?? "—"}</td>
+                    <td>{m.last_logged_in ? format(new Date(m.last_logged_in), "MMM d, yyyy") : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!loading && searched && !error && !user && !(matches && matches.length > 0) && (
+          <div className="empty-state">
+            {matches ? "No user found with that email." : "No user found with that ID."}
+          </div>
         )}
 
         {!searched && !loading && (
           <div className="empty-state">
-            Enter a user ID above to look up their profile and lesson history.
+            Enter a user ID or email (or part of one) above to look up their profile and lesson history.
           </div>
         )}
       </div>
