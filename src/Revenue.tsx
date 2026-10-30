@@ -20,7 +20,8 @@ import { format } from "date-fns";
 // subscription_transactions / subscription_products tables (backfilled from
 // Superwall ClickHouse, purchases since 2026-03-01, store-vs-RevenueCat
 // duplicates removed by transactionId) through the revenue_monthly,
-// revenue_by_plan, revenue_users and revenue_subscribers_daily RPCs (supabase/sql/revenue_page.sql).
+// revenue_by_plan, revenue_users, revenue_user_retention and revenue_subscribers_daily
+// RPCs (supabase/sql/revenue_page.sql).
 
 type Platform = "all" | "ios" | "android";
 type Money = "gross" | "net";
@@ -66,6 +67,13 @@ interface UserRow {
   refunds: number;
   first_paid_at: string | null;
   last_paid_at: string | null;
+  // 0-100 from lesson history; active days dominate (see revenue_user_retention).
+  retention: number;
+  active_days: number;
+  lessons: number;
+  avg_lesson_min: number | null;
+  completion_rate: number | null;
+  last_lesson_at: string | null;
 }
 
 interface SubDayRow {
@@ -124,7 +132,14 @@ function statusVariant(s: string | null): string {
 const fmtDate = (iso: string | null) => (iso ? format(new Date(iso), "MMM d, yyyy") : "—");
 
 type PlanSort = "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals";
-type UserSort = "gross" | "net" | "payments" | "last_paid_at";
+type UserSort = "gross" | "net" | "payments" | "last_paid_at" | "retention";
+
+// ~7 active days lands a user near 50, 30+ near 80+.
+function retentionColor(score: number): string {
+  if (score >= 70) return "#1baf7a";
+  if (score >= 40) return "#eda100";
+  return "#eb6834";
+}
 
 const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserClick }) => {
   const [platform, setPlatform] = useState<Platform>("all");
@@ -159,13 +174,18 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         }
       };
       // Any rpc() error must surface — an error read as "empty" looks like "no revenue".
-      const [m, p, u, sd] = await Promise.all([
+      const [m, p, u, sd, ret] = await Promise.all([
         supabase.rpc("revenue_monthly", { p_platform }),
         supabase.rpc("revenue_by_plan", { p_platform }),
         fetchUsers(),
         supabase.rpc("revenue_subscribers_daily", { p_platform }),
+        // One json array, not rows, so it isn't paged by the 1,000-row cap.
+        supabase.rpc("revenue_user_retention", { p_platform }),
       ]);
-      for (const r of [m, p, u, sd]) if (r.error) throw new Error(r.error.message);
+      for (const r of [m, p, u, sd, ret]) if (r.error) throw new Error(r.error.message);
+      const retention = new Map<string, Record<string, unknown>>(
+        ((ret.data ?? []) as Record<string, unknown>[]).map((r) => [String(r.user_id), r]),
+      );
       setSubDays(
         (sd.data ?? []).map((r: Record<string, unknown>) => ({
           day: String(r.day),
@@ -203,22 +223,31 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         })),
       );
       setUsers(
-        (u.data ?? []).map((r: Record<string, unknown>) => ({
-          user_id: String(r.user_id),
-          preferred_name: (r.preferred_name as string) ?? null,
-          payment_status: (r.payment_status as string) ?? null,
-          platform: String(r.platform),
-          trial_product_id: (r.trial_product_id as string) ?? null,
-          first_paid_product_id: (r.first_paid_product_id as string) ?? null,
-          current_product_id: (r.current_product_id as string) ?? null,
-          current_bucket: String(r.current_bucket ?? ""),
-          payments: num(r.payments),
-          gross: num(r.gross),
-          net: num(r.net),
-          refunds: num(r.refunds),
-          first_paid_at: (r.first_paid_at as string) ?? null,
-          last_paid_at: (r.last_paid_at as string) ?? null,
-        })),
+        (u.data ?? []).map((r: Record<string, unknown>) => {
+          const e = retention.get(String(r.user_id));
+          return {
+            user_id: String(r.user_id),
+            preferred_name: (r.preferred_name as string) ?? null,
+            payment_status: (r.payment_status as string) ?? null,
+            platform: String(r.platform),
+            trial_product_id: (r.trial_product_id as string) ?? null,
+            first_paid_product_id: (r.first_paid_product_id as string) ?? null,
+            current_product_id: (r.current_product_id as string) ?? null,
+            current_bucket: String(r.current_bucket ?? ""),
+            payments: num(r.payments),
+            gross: num(r.gross),
+            net: num(r.net),
+            refunds: num(r.refunds),
+            first_paid_at: (r.first_paid_at as string) ?? null,
+            last_paid_at: (r.last_paid_at as string) ?? null,
+            retention: num(e?.score),
+            active_days: num(e?.active_days),
+            lessons: num(e?.lessons),
+            avg_lesson_min: e?.avg_lesson_min == null ? null : Number(e.avg_lesson_min),
+            completion_rate: e?.completion_rate == null ? null : Number(e.completion_rate),
+            last_lesson_at: (e?.last_lesson_at as string) ?? null,
+          };
+        }),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -724,6 +753,13 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       <th style={sortTh(userSort === "last_paid_at")} onClick={() => setUserSort("last_paid_at")}>
                         Last paid
                       </th>
+                      <th
+                        style={sortTh(userSort === "retention")}
+                        onClick={() => setUserSort("retention")}
+                        title="0–100. Active days (60 pts, full at 30 days) + avg lesson length (15, full at 10 min) + share of lessons finished (15) + recency (10, full within 7 days, 0 after 30). Onboarding and silent lessons don't count."
+                      >
+                        Retention
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="table-body">
@@ -778,6 +814,34 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                           <td>{usd(u.gross, 2)}</td>
                           <td>{usd(u.net, 2)}</td>
                           <td style={{ whiteSpace: "nowrap" }}>{fmtDate(u.last_paid_at)}</td>
+                          <td
+                            style={{ whiteSpace: "nowrap" }}
+                            title={
+                              u.lessons
+                                ? `${u.active_days} active days · ${u.lessons} lessons · ` +
+                                  `avg ${u.avg_lesson_min ?? "—"} min · ` +
+                                  `${u.completion_rate == null ? "—" : Math.round(u.completion_rate * 100) + "%"} finished · ` +
+                                  `last lesson ${fmtDate(u.last_lesson_at)}`
+                                : "No lessons with the user speaking"
+                            }
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <strong style={{ minWidth: 22 }}>{u.retention}</strong>
+                              <div style={{ width: 48, height: 6, borderRadius: 3, background: "#e5e7eb" }}>
+                                <div
+                                  style={{
+                                    width: `${u.retention}%`,
+                                    height: "100%",
+                                    borderRadius: 3,
+                                    background: retentionColor(u.retention),
+                                  }}
+                                />
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 11, color: "#6b7280" }}>
+                              {u.lessons ? `${u.active_days} days · ${u.lessons} lessons` : "no lessons"}
+                            </div>
+                          </td>
                         </tr>
                       );
                     })}

@@ -105,6 +105,70 @@ language sql stable security definer set search_path = public as $$
   limit p_limit;
 $$;
 
+-- Retention score per identified user (same population as revenue_users),
+-- 0-100, from their lesson history. Onboarding lesson 42 and silent lessons
+-- (no user turn) don't count. Active days are the main factor:
+--   60  active days: distinct UTC days with a lesson, log-scaled, full at 30
+--       (1 day = 12, 3 = 24, 7 = 36, 14 = 47)
+--   15  lesson length: avg minutes, full at 10. Measured from turn_metrics
+--       timestamps where present, else 0.5 min per spoken user turn (fits the
+--       measured lessons at r = 0.89); lessons with neither are skipped
+--   15  completion: share of lessons not ended early
+--   10  recency: full if the last lesson was within 7 days, 0 at 30+
+-- A user with no active days scores 0.
+-- Returns one json array rather than rows: reading transcripts makes this the
+-- slow part of the page (~3s), and a single value isn't paged by PostgREST's
+-- 1,000-row cap, so the client calls it once instead of once per page.
+create or replace function public.revenue_user_retention(p_platform text default null)
+returns json
+language sql stable security definer set search_path = public as $$
+  with l as (
+    select cl.user_id, cl.created_at, cl.ended_early, cl.exit_phase, m.measured_min,
+           -- '"role":"user"' substrings: json keeps the raw text, and this
+           -- matches json_array_elements exactly (checked 2026-10-29) without
+           -- parsing. Skipped when the lesson has a measured duration and an
+           -- exit_phase, so its transcript is never read.
+           case when (m.measured_min is null or cl.exit_phase is null)
+                     and json_typeof(cl.conversation_transcript) = 'array' then
+             (length(cl.conversation_transcript::text)
+              - length(replace(cl.conversation_transcript::text, '"role":"user"', ''))) / 13 end as user_turns
+    from user_revenue ur
+    join completed_lessons cl on cl.user_id = ur.user_id
+    cross join lateral (
+      select case when jsonb_typeof(cl.turn_metrics) = 'array' and jsonb_array_length(cl.turn_metrics) > 1 then
+               (select max((x->>'received_at')::numeric) - min((x->>'received_at')::numeric)  -- epoch ms
+                from jsonb_array_elements(cl.turn_metrics) x) / 60000 end as measured_min
+    ) m
+    where cl.lesson_id is distinct from 42
+      and (p_platform is null or ur.platform = p_platform)
+  ), eng as (
+    select user_id,
+           count(distinct (created_at at time zone 'UTC')::date)::int as active_days,
+           count(*)::int as lessons,
+           avg(coalesce(measured_min, user_turns * 0.5)) as avg_min,
+           avg(case when ended_early then 0 else 1 end) filter (where ended_early is not null) as completion,
+           max(created_at) as last_lesson_at
+    from l
+    where coalesce(exit_phase, '') not in ('connected_no_user_turn', 'never_connected')
+      and coalesce(user_turns, 1) > 0
+    group by user_id
+  )
+  select coalesce(json_agg(json_build_object(
+           'user_id', user_id,
+           'active_days', active_days,
+           'lessons', lessons,
+           'avg_lesson_min', round(avg_min, 1),
+           'completion_rate', round(completion, 3),
+           'last_lesson_at', last_lesson_at,
+           'score', round(
+              60 * least(1, ln(1 + active_days) / ln(31))
+              + 15 * least(1, coalesce(avg_min, 0) / 10)
+              + 15 * coalesce(completion, 0)
+              + 10 * greatest(0, 1 - greatest(0, extract(epoch from now() - last_lesson_at) / 86400 - 7) / 23)
+           )::int)), '[]'::json)
+  from eng;
+$$;
+
 -- Paying subscribers per day, with the day's gains and losses.
 -- A paid initial_purchase / renewal covers [purchased_at, purchased_at + period);
 -- a refund cuts its coverage short at the refund date. Coverage is merged per
