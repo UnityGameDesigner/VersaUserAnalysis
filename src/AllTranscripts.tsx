@@ -143,6 +143,10 @@ interface UserMeta {
   trial_started_at: string | null;
   became_active_at: string | null;
   interests?: string[]; // from user_interests (onboarding); attached after fetch
+  // Lifetime lesson activity (user_activity_summary RPC); attached after fetch.
+  active_days?: number;
+  lessons?: number;
+  first_lesson_at?: string | null;
 }
 
 const USER_INFO_COLUMNS =
@@ -723,6 +727,22 @@ const TranscriptCard: React.FC<{
         >
           {row.user_id.slice(0, 8) + "…"}
         </a>
+        {user?.active_days != null && (
+          <span
+            className="lesson-card-badge"
+            style={{ background: "#eef2ff", color: "#4338ca", border: "1px solid #c7d2fe" }}
+            title={
+              `Used the app on ${user.active_days} different day${user.active_days === 1 ? "" : "s"} ` +
+              `(${user.lessons} lesson${user.lessons === 1 ? "" : "s"} in total)` +
+              (user.first_lesson_at
+                ? `, first lesson ${format(new Date(user.first_lesson_at), "MMM d, yyyy h:mm a")}`
+                : "")
+            }
+          >
+            {user.active_days} day{user.active_days === 1 ? "" : "s"}
+            {user.first_lesson_at && ` · since ${format(new Date(user.first_lesson_at), "MMM d, yyyy")}`}
+          </span>
+        )}
         <span className="lesson-card-lesson-id">Lesson #{row.lesson_id}</span>
         <span className="lesson-card-date">
           {format(new Date(row.created_at), "MMM d, yyyy h:mm a")}
@@ -1173,13 +1193,30 @@ const AllTranscripts: React.FC = () => {
           .select(USER_INFO_COLUMNS)
           .in("user_id", newUserIds);
         if (!uErr && users) {
-          const interestMap = await fetchInterests(newUserIds);
+          // Activity is non-fatal — the tile just omits its "days used" badge.
+          const [interestMap, { data: activity, error: aErr }] = await Promise.all([
+            fetchInterests(newUserIds),
+            supabase.rpc("user_activity_summary", { p_user_ids: newUserIds }),
+          ]);
+          if (aErr) console.warn("user_activity_summary fetch failed:", aErr.message);
+          const activityMap = new Map(
+            ((activity as { user_id: string; active_days: number; lessons: number; first_lesson_at: string }[]) ?? []).map(
+              (a) => [a.user_id, a],
+            ),
+          );
           setUserMeta((prev) => {
             const next = new Map(prev);
             (users as unknown as (UserMeta & { user_id: string })[]).forEach((u) => {
               if (!next.has(u.user_id)) {
                 const { user_id, ...meta } = u;
-                next.set(user_id, { ...meta, interests: interestMap.get(user_id) ?? [] });
+                const a = activityMap.get(user_id);
+                next.set(user_id, {
+                  ...meta,
+                  interests: interestMap.get(user_id) ?? [],
+                  active_days: a?.active_days,
+                  lessons: a?.lessons,
+                  first_lesson_at: a?.first_lesson_at ?? null,
+                });
               }
             });
             return next;
