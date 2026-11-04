@@ -314,6 +314,11 @@ language sql stable security definer set search_path = public as $$
       select count(*)::int as lessons,
              (count(*) filter (where cl.created_at >= pu.first_paid_at
                                  and cl.created_at < l.lapsed_on + 1))::int as lessons_while_paid,
+             -- Distinct UTC days with a lesson, ever and while paid.
+             count(distinct (cl.created_at at time zone 'UTC')::date)::int as active_days,
+             (count(distinct (cl.created_at at time zone 'UTC')::date)
+                filter (where cl.created_at >= pu.first_paid_at
+                          and cl.created_at < l.lapsed_on + 1))::int as active_days_while_paid,
              max(cl.created_at) as last_lesson_at
       from completed_lessons cl
       where cl.user_id = l.user_id and cl.lesson_id is distinct from 42
@@ -338,6 +343,8 @@ language sql stable security definer set search_path = public as $$
            'lapsed_on', l.lapsed_on,
            'lessons', coalesce(ls.lessons, 0),
            'lessons_while_paid', coalesce(ls.lessons_while_paid, 0),
+           'active_days', coalesce(ls.active_days, 0),
+           'active_days_while_paid', coalesce(ls.active_days_while_paid, 0),
            'last_lesson_at', ls.last_lesson_at,
            'days_lapsed', (select d from as_of) - l.lapsed_on,
            'reason', case when l.last_refunded then 'refunded' else 'not renewed' end,

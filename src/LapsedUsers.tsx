@@ -10,7 +10,7 @@ import { BUCKETS, BUCKET_COLORS, num, usd, planName, statusVariant, fmtDate } fr
 
 type Platform = "all" | "ios" | "android";
 type PlanMatch = "last" | "any"; // the plan they lapsed from, or any plan they paid for
-type LapsedSort = "lapsed_on" | "gross" | "payments" | "lessons";
+type LapsedSort = "lapsed_on" | "gross" | "payments" | "lessons" | "active_days";
 
 interface LapsedRow {
   user_id: string;
@@ -29,6 +29,8 @@ interface LapsedRow {
   // Completed lessons, onboarding excluded: ever, and from first payment to the lapse.
   lessons: number;
   lessons_while_paid: number;
+  active_days: number; // distinct UTC days with a lesson, same scope as lessons
+  active_days_while_paid: number;
   last_lesson_at: string | null;
   days_lapsed: number;
   reason: "refunded" | "not renewed";
@@ -89,6 +91,8 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
               lapsed_on: String(r.lapsed_on),
               lessons: num(r.lessons),
               lessons_while_paid: num(r.lessons_while_paid),
+              active_days: num(r.active_days),
+              active_days_while_paid: num(r.active_days_while_paid),
               last_lesson_at: (r.last_lesson_at as string) ?? null,
               days_lapsed: num(r.days_lapsed),
               reason: r.reason === "refunded" ? "refunded" : "not renewed",
@@ -162,14 +166,15 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
   const downloadCsv = () => {
     const header = [
       "user_id", "name", "platform", "status_now", "lapsed_from_plan", "lapsed_from_length", "plans_had",
-      "payments", "gross_usd", "net_usd", "lessons", "lessons_while_paid", "last_lesson_at",
+      "payments", "gross_usd", "net_usd", "lessons", "lessons_while_paid", "active_days",
+      "active_days_while_paid", "last_lesson_at",
       "first_paid_at", "last_paid_at", "lapsed_on", "days_lapsed", "reason",
     ];
     const lines = shown.map((r) =>
       [
         r.user_id, r.preferred_name, r.platform, r.payment_status, r.last_product_id, r.last_bucket,
         r.plans.map((p) => p.id).join(" | "), r.payments, r.gross.toFixed(2), r.net.toFixed(2), r.lessons, r.lessons_while_paid,
-        r.last_lesson_at, r.first_paid_at, r.last_paid_at,
+        r.active_days, r.active_days_while_paid, r.last_lesson_at, r.first_paid_at, r.last_paid_at,
         r.lapsed_on, r.days_lapsed, r.reason,
       ].map(csvCell).join(","),
     );
@@ -324,6 +329,13 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
                   >
                     Lessons
                   </th>
+                  <th
+                    style={sortTh(sort === "active_days")}
+                    onClick={() => setSort("active_days")}
+                    title="Distinct days (UTC) with at least one lesson (onboarding excluded), and how many of them were while they were paying"
+                  >
+                    Active days
+                  </th>
                   <th style={sortTh(sort === "lapsed_on")} onClick={() => setSort("lapsed_on")}>
                     Lapsed on
                   </th>
@@ -383,6 +395,10 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
                           {r.lessons_while_paid} while paid
                           {r.last_lesson_at && ` · last ${fmtDate(r.last_lesson_at)}`}
                         </div>
+                      </td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {r.active_days}
+                        <div style={{ fontSize: 11, color: "#6b7280" }}>{r.active_days_while_paid} while paid</div>
                       </td>
                       <td style={{ whiteSpace: "nowrap" }}>
                         {fmtDate(r.lapsed_on)}
