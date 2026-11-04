@@ -14,3 +14,6 @@ project_id = "hngvsvjujxunowfwqzet"
 
 [functions.superwall-webhook]
 verify_jwt = false
+
+[functions.superwall-tx-sync]
+verify_jwt = false
