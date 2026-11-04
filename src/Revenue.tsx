@@ -15,6 +15,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { format } from "date-fns";
+import { BUCKETS, BUCKET_COLORS, num, usd, planName, statusVariant, fmtDate } from "./lib/revenueFormat";
+import LapsedUsers from "./LapsedUsers";
 
 // "Revenue" — which plan each user is on and how much they have paid. Reads the
 // subscription_transactions / subscription_products tables (backfilled from
@@ -92,47 +94,9 @@ type SubRange = 30 | 90 | 0; // days shown; 0 = everything since Mar 1
 const GAINED_COLOR = "#2a78d6";
 const LOST_COLOR = "#eb6834";
 
-// Fixed order = fixed color: a bucket keeps its hue whatever the filter shows.
-const BUCKETS = ["Monthly", "Yearly", "3-month", "Weekly", "One-off"] as const;
-const BUCKET_COLORS: Record<string, string> = {
-  Monthly: "#2a78d6",
-  Yearly: "#eb6834",
-  "3-month": "#1baf7a",
-  Weekly: "#eda100",
-  "One-off": "#e87ba4",
-};
-
-const num = (v: unknown) => (v == null ? 0 : Number(v));
-
-function usd(v: number, digits = 0): string {
-  return v.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}
-
 function pct(n: number, d: number): string {
   return d > 0 ? `${((100 * n) / d).toFixed(1)}%` : "—";
 }
-
-// Store product ids are opaque ("versa_1y_premium:one-month-eight"); the part
-// after the base-plan prefix is the readable bit.
-function planName(id: string | null): string {
-  if (!id) return "—";
-  const parts = id.split(":");
-  return parts.length > 1 && parts[0] === "versa_1y_premium" ? parts.slice(1).join(":") : id;
-}
-
-function statusVariant(s: string | null): string {
-  if (s === "ACTIVE") return "paying";
-  if (s === "TRIAL") return "trial";
-  if (s === "PAST_DUE") return "pastdue";
-  return "free";
-}
-
-const fmtDate = (iso: string | null) => (iso ? format(new Date(iso), "MMM d, yyyy") : "—");
 
 type PlanSort = "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals";
 type UserSort = "gross" | "net" | "payments" | "last_paid_at" | "retention";
@@ -146,6 +110,7 @@ function retentionColor(score: number): string {
 
 const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserClick }) => {
   const [platform, setPlatform] = useState<Platform>("all");
+  const [view, setView] = useState<"overview" | "lapsed">("overview");
   const [money, setMoney] = useState<Money>("gross");
   const [months, setMonths] = useState<MonthRow[]>([]);
   const [plans, setPlans] = useState<PlanRow[]>([]);
@@ -371,6 +336,21 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         price in USD; net is what we keep after the store's commission and tax. Refunds subtract from net.
       </p>
 
+      <div className="tab-bar" style={{ marginTop: "1rem" }}>
+        <button
+          className={`tab-btn${view === "overview" ? " tab-btn--active" : ""}`}
+          onClick={() => setView("overview")}
+        >
+          Overview
+        </button>
+        <button
+          className={`tab-btn${view === "lapsed" ? " tab-btn--active" : ""}`}
+          onClick={() => setView("lapsed")}
+        >
+          Lapsed users
+        </button>
+      </div>
+
       <div
         className="controls-bar"
         style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", marginTop: "1rem" }}
@@ -386,23 +366,28 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
             </button>
           ))}
         </div>
-        <div className="ret-seg" role="group" aria-label="Revenue measure">
-          <button className={`ret-seg-btn${money === "gross" ? " ret-seg-btn--on" : ""}`} onClick={() => setMoney("gross")}>
-            Gross
-          </button>
-          <button className={`ret-seg-btn${money === "net" ? " ret-seg-btn--on" : ""}`} onClick={() => setMoney("net")}>
-            Net
-          </button>
-        </div>
+        {view === "overview" && (
+          <div className="ret-seg" role="group" aria-label="Revenue measure">
+            <button className={`ret-seg-btn${money === "gross" ? " ret-seg-btn--on" : ""}`} onClick={() => setMoney("gross")}>
+              Gross
+            </button>
+            <button className={`ret-seg-btn${money === "net" ? " ret-seg-btn--on" : ""}`} onClick={() => setMoney("net")}>
+              Net
+            </button>
+          </div>
+        )}
       </div>
 
-      {error && (
+
+      {view === "overview" && error && (
         <div className="error-box" style={{ margin: "1rem 0" }}>
           <p>Failed to load: {error}</p>
         </div>
       )}
 
-      {loading ? (
+      {view === "lapsed" ? (
+        <LapsedUsers platform={platform} onUserClick={onUserClick} />
+      ) : loading ? (
         <div style={{ textAlign: "center", padding: "3rem" }}>
           <div className="loading-spinner"></div>
           <p className="loading-text">Loading plans and revenue…</p>

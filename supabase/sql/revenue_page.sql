@@ -243,3 +243,97 @@ language sql stable security definer set search_path = public as $$
   group by d.day
   order by d.day;
 $$;
+
+-- Lapsed paying users: identified users whose paid coverage has ended with no
+-- renewal. Coverage is built exactly as in revenue_subscribers_daily (paid
+-- initial_purchase / renewal periods, cut short by a refund, gaps <= 3 days
+-- bridged), per user. A user is lapsed when their LATEST coverage span ended on
+-- or before the as-of date = newest transaction - 3 days (the same cut-off the
+-- daily chart uses, so a pending renewal isn't read as a lapse). The
+-- transactions are a one-time backfill, so as_of — returned with every row —
+-- can lag today; payment_status is the live user_info value, so a user who
+-- renewed after the backfill shows ACTIVE here and the page can hide them.
+-- Returns one json array (not rows) so the client makes a single call.
+create or replace function public.revenue_lapsed_users(p_platform text default null)
+returns json
+language sql stable security definer set search_path = public as $$
+  with as_of as (
+    select max(purchased_at)::date - 3 as d from subscription_transactions
+  ), cov as (
+    select st.user_id, st.platform, st.product_id, st.purchased_at,
+           st.purchased_at::date as s,
+           least((st.purchased_at + len)::date, coalesce(r.purchased_at::date, 'infinity'::date)) as e
+    from subscription_transactions st
+    join subscription_products sp on sp.product_id = st.product_id
+    cross join lateral (select case sp.period when 'week' then interval '1 week'
+                                              when 'month' then interval '1 month'
+                                              when 'year' then interval '1 year' end * sp.period_count as len) l
+    left join subscription_transactions r on r.transaction_id = st.transaction_id and r.event = 'refund'
+    where st.event in ('initial_purchase', 'renewal') and st.price_usd > 0 and len is not null
+      and st.user_id is not null
+      and (p_platform is null or st.platform = p_platform)
+  ), ordered as (
+    select *, max(e) over (partition by user_id order by s, e rows between unbounded preceding and 1 preceding) as prev_e
+    from cov where e > s
+  ), islands as (
+    select *, sum(case when prev_e is null or s > prev_e + 3 then 1 else 0 end)
+                over (partition by user_id order by s, e) as island
+    from ordered
+  ), spans as (
+    select user_id, island, min(s) as s, max(e) as e,
+           (array_agg(product_id order by purchased_at desc))[1] as last_product_id,
+           row_number() over (partition by user_id order by max(e) desc) as rn
+    from islands group by user_id, island
+  ), per_user as (
+    select user_id,
+           (array_agg(platform order by purchased_at desc))[1] as platform,
+           array_agg(distinct product_id) as plans,
+           min(purchased_at) as first_paid_at,
+           max(purchased_at) as last_paid_at
+    from cov group by user_id
+  ), lapsed as (
+    -- "refunded" if any refund landed during or after the last span: a
+    -- purchase refunded the same day leaves no coverage, so it can't be read
+    -- off the span itself.
+    select sp.user_id, sp.s as span_start, sp.e as lapsed_on, sp.last_product_id,
+           exists (select 1 from subscription_transactions r
+                   where r.user_id = sp.user_id and r.event = 'refund' and r.purchased_at::date >= sp.s
+                     and (p_platform is null or r.platform = p_platform)) as last_refunded,
+           (select count(*) from spans o where o.user_id = sp.user_id)::int as spans
+    from spans sp, as_of
+    where sp.rn = 1 and sp.e <= as_of.d
+  )
+  select coalesce(json_agg(json_build_object(
+           'user_id', l.user_id,
+           'preferred_name', ui.preferred_name,
+           'payment_status', ui.payment_status,
+           'platform', pu.platform,
+           'last_product_id', l.last_product_id,
+           'last_bucket', plan_bucket(lp.period_months),
+           'plans', (select json_agg(json_build_object('id', p.product_id, 'bucket', plan_bucket(p.period_months))
+                                     order by p.product_id)
+                     from subscription_products p where p.product_id = any(pu.plans)),
+           -- Money as on the Users table (user_revenue: refunds counted).
+           'payments', ur.payments,
+           'gross', ur.gross_usd,
+           'net', ur.net_usd,
+           'first_paid_at', pu.first_paid_at,
+           'last_paid_at', pu.last_paid_at,
+           'lapsed_on', l.lapsed_on,
+           'days_lapsed', (select d from as_of) - l.lapsed_on,
+           'reason', case when l.last_refunded then 'refunded' else 'not renewed' end,
+           'resubscribed_before', l.spans > 1,
+           'as_of', (select d from as_of)
+         ) order by l.lapsed_on desc), '[]'::json)
+  from lapsed l
+  join per_user pu on pu.user_id = l.user_id
+  left join user_revenue ur on ur.user_id = l.user_id
+  left join subscription_products lp on lp.product_id = l.last_product_id
+  left join user_info ui on ui.user_id = l.user_id;
+$$;
+
+-- Names and live status: signed-in dashboard users only, not the anon key.
+revoke all on function public.revenue_lapsed_users(text) from public, anon;
+grant execute on function public.revenue_lapsed_users(text) to authenticated;
+
+notify pgrst, 'reload schema';
