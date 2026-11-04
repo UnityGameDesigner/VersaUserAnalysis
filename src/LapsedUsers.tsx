@@ -10,7 +10,7 @@ import { BUCKETS, BUCKET_COLORS, num, usd, planName, statusVariant, fmtDate } fr
 
 type Platform = "all" | "ios" | "android";
 type PlanMatch = "last" | "any"; // the plan they lapsed from, or any plan they paid for
-type LapsedSort = "lapsed_on" | "gross" | "payments";
+type LapsedSort = "lapsed_on" | "gross" | "payments" | "lessons";
 
 interface LapsedRow {
   user_id: string;
@@ -26,6 +26,10 @@ interface LapsedRow {
   first_paid_at: string | null;
   last_paid_at: string | null;
   lapsed_on: string;
+  // Completed lessons, onboarding excluded: ever, and from first payment to the lapse.
+  lessons: number;
+  lessons_while_paid: number;
+  last_lesson_at: string | null;
   days_lapsed: number;
   reason: "refunded" | "not renewed";
   resubscribed_before: boolean;
@@ -83,6 +87,9 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
               first_paid_at: (r.first_paid_at as string) ?? null,
               last_paid_at: (r.last_paid_at as string) ?? null,
               lapsed_on: String(r.lapsed_on),
+              lessons: num(r.lessons),
+              lessons_while_paid: num(r.lessons_while_paid),
+              last_lesson_at: (r.last_lesson_at as string) ?? null,
               days_lapsed: num(r.days_lapsed),
               reason: r.reason === "refunded" ? "refunded" : "not renewed",
               resubscribed_before: Boolean(r.resubscribed_before),
@@ -155,12 +162,14 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
   const downloadCsv = () => {
     const header = [
       "user_id", "name", "platform", "status_now", "lapsed_from_plan", "lapsed_from_length", "plans_had",
-      "payments", "gross_usd", "net_usd", "first_paid_at", "last_paid_at", "lapsed_on", "days_lapsed", "reason",
+      "payments", "gross_usd", "net_usd", "lessons", "lessons_while_paid", "last_lesson_at",
+      "first_paid_at", "last_paid_at", "lapsed_on", "days_lapsed", "reason",
     ];
     const lines = shown.map((r) =>
       [
         r.user_id, r.preferred_name, r.platform, r.payment_status, r.last_product_id, r.last_bucket,
-        r.plans.map((p) => p.id).join(" | "), r.payments, r.gross.toFixed(2), r.net.toFixed(2), r.first_paid_at, r.last_paid_at,
+        r.plans.map((p) => p.id).join(" | "), r.payments, r.gross.toFixed(2), r.net.toFixed(2), r.lessons, r.lessons_while_paid,
+        r.last_lesson_at, r.first_paid_at, r.last_paid_at,
         r.lapsed_on, r.days_lapsed, r.reason,
       ].map(csvCell).join(","),
     );
@@ -308,6 +317,13 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
                   <th style={sortTh(sort === "gross")} onClick={() => setSort("gross")}>
                     Gross
                   </th>
+                  <th
+                    style={sortTh(sort === "lessons")}
+                    onClick={() => setSort("lessons")}
+                    title="Lessons completed (onboarding excluded), and how many of them were while they were paying"
+                  >
+                    Lessons
+                  </th>
                   <th style={sortTh(sort === "lapsed_on")} onClick={() => setSort("lapsed_on")}>
                     Lapsed on
                   </th>
@@ -361,6 +377,13 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
                       </td>
                       <td>{r.payments}</td>
                       <td>{usd(r.gross, 2)}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {r.lessons}
+                        <div style={{ fontSize: 11, color: "#6b7280" }}>
+                          {r.lessons_while_paid} while paid
+                          {r.last_lesson_at && ` · last ${fmtDate(r.last_lesson_at)}`}
+                        </div>
+                      </td>
                       <td style={{ whiteSpace: "nowrap" }}>
                         {fmtDate(r.lapsed_on)}
                         <div style={{ fontSize: 11, color: "#6b7280" }}>{r.days_lapsed} days before as-of</div>

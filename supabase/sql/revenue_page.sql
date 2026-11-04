@@ -302,6 +302,22 @@ language sql stable security definer set search_path = public as $$
            (select count(*) from spans o where o.user_id = sp.user_id)::int as spans
     from spans sp, as_of
     where sp.rn = 1 and sp.e <= as_of.d
+  ), lessons as (
+    -- Lessons completed (onboarding lesson 42 excluded): ever, and while paid
+    -- (first payment up to the lapse date).
+    -- LATERAL so each user is an index probe on (user_id, created_at); a
+    -- plain join lets the planner seq-scan the whole (wide) table.
+    select l.user_id, c.*
+    from lapsed l
+    join per_user pu on pu.user_id = l.user_id
+    cross join lateral (
+      select count(*)::int as lessons,
+             (count(*) filter (where cl.created_at >= pu.first_paid_at
+                                 and cl.created_at < l.lapsed_on + 1))::int as lessons_while_paid,
+             max(cl.created_at) as last_lesson_at
+      from completed_lessons cl
+      where cl.user_id = l.user_id and cl.lesson_id is distinct from 42
+    ) c
   )
   select coalesce(json_agg(json_build_object(
            'user_id', l.user_id,
@@ -320,6 +336,9 @@ language sql stable security definer set search_path = public as $$
            'first_paid_at', pu.first_paid_at,
            'last_paid_at', pu.last_paid_at,
            'lapsed_on', l.lapsed_on,
+           'lessons', coalesce(ls.lessons, 0),
+           'lessons_while_paid', coalesce(ls.lessons_while_paid, 0),
+           'last_lesson_at', ls.last_lesson_at,
            'days_lapsed', (select d from as_of) - l.lapsed_on,
            'reason', case when l.last_refunded then 'refunded' else 'not renewed' end,
            'resubscribed_before', l.spans > 1,
@@ -328,6 +347,7 @@ language sql stable security definer set search_path = public as $$
   from lapsed l
   join per_user pu on pu.user_id = l.user_id
   left join user_revenue ur on ur.user_id = l.user_id
+  left join lessons ls on ls.user_id = l.user_id
   left join subscription_products lp on lp.product_id = l.last_product_id
   left join user_info ui on ui.user_id = l.user_id;
 $$;
