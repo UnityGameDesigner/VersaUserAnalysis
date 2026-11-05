@@ -17,6 +17,7 @@ import {
 import { format } from "date-fns";
 import { BUCKETS, BUCKET_COLORS, num, usd, planName, statusVariant, fmtDate } from "./lib/revenueFormat";
 import LapsedUsers from "./LapsedUsers";
+import PlanRetention from "./PlanRetention";
 
 // "Revenue" — which plan each user is on and how much they have paid. Reads the
 // subscription_transactions / subscription_products tables (backfilled from
@@ -110,7 +111,7 @@ function retentionColor(score: number): string {
 
 const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserClick }) => {
   const [platform, setPlatform] = useState<Platform>("all");
-  const [view, setView] = useState<"overview" | "lapsed">("overview");
+  const [view, setView] = useState<"overview" | "plans" | "lapsed">("overview");
   const [money, setMoney] = useState<Money>("gross");
   const [months, setMonths] = useState<MonthRow[]>([]);
   const [plans, setPlans] = useState<PlanRow[]>([]);
@@ -344,6 +345,12 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           Overview
         </button>
         <button
+          className={`tab-btn${view === "plans" ? " tab-btn--active" : ""}`}
+          onClick={() => setView("plans")}
+        >
+          Plan retention
+        </button>
+        <button
           className={`tab-btn${view === "lapsed" ? " tab-btn--active" : ""}`}
           onClick={() => setView("lapsed")}
         >
@@ -387,6 +394,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
 
       {view === "lapsed" ? (
         <LapsedUsers platform={platform} onUserClick={onUserClick} />
+      ) : view === "plans" ? (
+        <PlanRetention platform={platform} />
       ) : loading ? (
         <div style={{ textAlign: "center", padding: "3rem" }}>
           <div className="loading-spinner"></div>
