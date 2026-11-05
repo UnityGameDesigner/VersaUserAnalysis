@@ -65,17 +65,24 @@ language sql stable security definer set search_path = public as $$
     left join pay p on p.chain = c.chain
     left join money m on m.chain = c.chain
   ), eng as (
-    -- Distinct days with a lesson in the first 30 days after the first payment.
-    select s.chain, x.days
+    -- Distinct days with a lesson in the first 7 / 14 / 30 days after the first
+    -- payment. Each window only counts subscriptions at least that old, so a
+    -- new plan shows its 7- and 14-day numbers long before it has 30 days.
+    select s.chain, s.first_paid_at <= now() - interval '14 days' as e14,
+           s.first_paid_at <= now() - interval '30 days' as e30, x.*
     from sub s
     cross join lateral (
-      select count(distinct (cl.created_at at time zone 'UTC')::date)::int as days
+      select count(distinct (cl.created_at at time zone 'UTC')::date)
+               filter (where cl.created_at < s.first_paid_at + interval '7 days')::int as days7,
+             count(distinct (cl.created_at at time zone 'UTC')::date)
+               filter (where cl.created_at < s.first_paid_at + interval '14 days')::int as days14,
+             count(distinct (cl.created_at at time zone 'UTC')::date)::int as days
       from completed_lessons cl
       where cl.user_id = s.user_id
         and cl.created_at >= s.first_paid_at and cl.created_at < s.first_paid_at + interval '30 days'
         and cl.lesson_id is distinct from 42
     ) x
-    where s.user_id is not null and s.first_paid_at <= now() - interval '30 days'
+    where s.user_id is not null and s.first_paid_at <= now() - interval '7 days'
   ), per_plan as (
     select s.product_id,
            (array_agg(s.platform))[1] as platform,
@@ -109,10 +116,15 @@ language sql stable security definer set search_path = public as $$
            coalesce(sum(s.net) filter (where s.payments > 0), 0) as net,
            coalesce(sum(extract(epoch from least(s.covered_to, a.d::timestamptz) - s.first_paid_at) / 86400)
                     filter (where s.payments > 0), 0) as paid_days,
-           count(e.chain) as eng_elig,
-           coalesce(sum(e.days), 0) as eng_days,
-           count(*) filter (where e.days = 0) as eng_zero,
-           count(*) filter (where e.days >= 8) as eng_weekly   -- ~2+ days a week
+           count(e.chain) as eng7_elig,
+           coalesce(sum(e.days7), 0) as eng7_days,
+           count(*) filter (where e.e14) as eng14_elig,
+           coalesce(sum(e.days14) filter (where e.e14), 0) as eng14_days,
+           count(*) filter (where e.e14 and e.days14 >= 5) as eng14_regular,   -- 5+ of 14 days
+           count(*) filter (where e.e30) as eng_elig,
+           coalesce(sum(e.days) filter (where e.e30), 0) as eng_days,
+           count(*) filter (where e.e30 and e.days = 0) as eng_zero,
+           count(*) filter (where e.e30 and e.days >= 8) as eng_weekly   -- ~2+ days a week
     from sub s
     cross join as_of a
     left join eng e on e.chain = s.chain
@@ -139,6 +151,8 @@ language sql stable security definer set search_path = public as $$
            'gross', round(pp.gross, 2),
            'net', round(pp.net, 2),
            'paid_days', round(pp.paid_days),
+           'eng7_elig', pp.eng7_elig, 'eng7_days', pp.eng7_days,
+           'eng14_elig', pp.eng14_elig, 'eng14_days', pp.eng14_days, 'eng14_regular', pp.eng14_regular,
            'eng_elig', pp.eng_elig, 'eng_days', pp.eng_days, 'eng_zero', pp.eng_zero, 'eng_weekly', pp.eng_weekly,
            'as_of', (select d from as_of)
          ) order by pp.subscribers desc), '[]'::json)

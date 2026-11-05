@@ -9,7 +9,9 @@ import { BUCKETS, BUCKET_COLORS, num, usd, planName, fmtDate } from "./lib/reven
 // rolled up here by summing.
 
 type Platform = "all" | "ios" | "android";
-type SortKey = "subscribers" | "trial" | "m1" | "m2" | "m3" | "m6" | "r1" | "refund" | "months" | "ltv" | "days" | "zero";
+type SortKey =
+  | "subscribers" | "trial" | "m1" | "m2" | "m3" | "m6" | "r1" | "refund" | "months" | "ltv"
+  | "days7" | "days14" | "days" | "zero";
 
 interface PlanRow {
   product_id: string;
@@ -39,6 +41,13 @@ interface PlanRow {
   gross: number;
   net: number;
   paid_days: number;
+  // Distinct days with a lesson in the first 7 / 14 / 30 days after paying,
+  // each over the identified subscribers at least that old.
+  eng7_elig: number;
+  eng7_days: number;
+  eng14_elig: number;
+  eng14_days: number;
+  eng14_regular: number; // 5+ active days of the first 14
   eng_elig: number;
   eng_days: number;
   eng_zero: number;
@@ -49,7 +58,8 @@ interface PlanRow {
 const COUNT_KEYS = [
   "trials", "trials_resolved", "trials_converted", "subscribers", "r1_elig", "r1_kept", "r2_elig", "r2_kept",
   "m1_elig", "m1_kept", "m2_elig", "m2_kept", "m3_elig", "m3_kept", "m6_elig", "m6_kept", "active_now",
-  "refunded", "payments", "gross", "net", "paid_days", "eng_elig", "eng_days", "eng_zero", "eng_weekly",
+  "refunded", "payments", "gross", "net", "paid_days", "eng7_elig", "eng7_days", "eng14_elig", "eng14_days",
+  "eng14_regular", "eng_elig", "eng_days", "eng_zero", "eng_weekly",
 ] as const;
 
 // Below this many eligible subscriptions a rate is shown faded; below MIN_SHOWN it isn't shown.
@@ -71,6 +81,8 @@ function metric(r: PlanRow, k: SortKey): number | null {
     case "refund": return r.subscribers >= MIN_SHOWN ? r.refunded / r.subscribers : null;
     case "months": return r.subscribers ? r.paid_days / 30.44 / r.subscribers : null;
     case "ltv": return r.subscribers ? r.net / r.subscribers : null;
+    case "days7": return r.eng7_elig >= MIN_SHOWN ? r.eng7_days / r.eng7_elig : null;
+    case "days14": return r.eng14_elig >= MIN_SHOWN ? r.eng14_days / r.eng14_elig : null;
     case "days": return r.eng_elig >= MIN_SHOWN ? r.eng_days / r.eng_elig : null;
     case "zero": return r.eng_elig >= MIN_SHOWN ? r.eng_zero / r.eng_elig : null;
   }
@@ -160,7 +172,9 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
   // Column ranges for the heat shading, over the plans on screen.
   const ranges = useMemo(() => {
     const m = new Map<SortKey, [number, number]>();
-    for (const k of ["trial", "m1", "m2", "m3", "m6", "r1", "refund", "months", "ltv", "days", "zero"] as SortKey[]) {
+    for (const k of [
+      "trial", "m1", "m2", "m3", "m6", "r1", "refund", "months", "ltv", "days7", "days14", "days", "zero",
+    ] as SortKey[]) {
       const vs = shown.map((r) => metric(r, k)).filter((v): v is number => v != null);
       if (vs.length) m.set(k, [Math.min(...vs), Math.max(...vs)]);
     }
@@ -217,12 +231,29 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
     );
   };
 
+  // Average active days in a window, shaded within its column, with a detail line underneath.
+  const daysCell = (r: PlanRow, k: SortKey, elig: number, sub: React.ReactNode, shade: boolean, title: string) => {
+    const v = metric(r, k);
+    const range = ranges.get(k);
+    return (
+      <td
+        style={{
+          whiteSpace: "nowrap",
+          ...(shade && range ? heat(v, range[0], range[1]) : {}),
+          opacity: elig < SMALL_SAMPLE ? 0.55 : 1,
+        }}
+        title={title}
+      >
+        {v == null ? "—" : v.toFixed(1)}
+        <div style={{ fontSize: 11, color: "#6b7280" }}>{elig >= MIN_SHOWN ? sub : elig ? `${elig} users` : "not yet"}</div>
+      </td>
+    );
+  };
+
   const row = (r: PlanRow, isLength: boolean) => {
     const months = metric(r, "months");
     const ltv = metric(r, "ltv");
-    const days = metric(r, "days");
     const ltvRange = ranges.get("ltv");
-    const daysRange = ranges.get("days");
     return (
       <tr key={(isLength ? "len:" : "") + r.product_id} style={isLength ? { fontWeight: 600 } : undefined}>
         <td title={r.product_id}>
@@ -262,19 +293,12 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
           {ltv == null ? "—" : usd(ltv, 2)}
           <div style={{ fontSize: 11, color: "#6b7280" }}>{usd(r.net)} net</div>
         </td>
-        <td
-          style={{
-            whiteSpace: "nowrap",
-            ...(!isLength && daysRange ? heat(days, daysRange[0], daysRange[1]) : {}),
-            opacity: r.eng_elig < SMALL_SAMPLE ? 0.55 : 1,
-          }}
-          title={`${r.eng_elig} identified subscribers whose first payment was 30+ days ago`}
-        >
-          {days == null ? "—" : days.toFixed(1)}
-          <div style={{ fontSize: 11, color: "#6b7280" }}>
-            {r.eng_elig >= MIN_SHOWN ? `${pctText(r.eng_weekly / r.eng_elig)} on 8+ days` : `${r.eng_elig} users`}
-          </div>
-        </td>
+        {daysCell(r, "days7", r.eng7_elig, `${r.eng7_elig} users`, !isLength,
+          `${r.eng7_elig} identified subscribers whose first payment was 7+ days ago`)}
+        {daysCell(r, "days14", r.eng14_elig, `${pctText(r.eng14_regular / r.eng14_elig)} on 5+ days`, !isLength,
+          `${r.eng14_elig} identified subscribers whose first payment was 14+ days ago`)}
+        {daysCell(r, "days", r.eng_elig, `${pctText(r.eng_weekly / r.eng_elig)} on 8+ days`, !isLength,
+          `${r.eng_elig} identified subscribers whose first payment was 30+ days ago`)}
         {rateCell(r, "zero", r.eng_zero, r.eng_elig, !isLength, true)}
       </tr>
     );
@@ -295,7 +319,9 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
         {sortTh("refund", "Share of subscribers with a refund", "Refunded")}
         {sortTh("months", "Average months of paid coverage per subscriber so far (up to the as-of date)", "Paid months")}
         {sortTh("ltv", "Net revenue (after store fees and refunds) per subscriber so far", "Net / subscriber")}
-        {sortTh("days", "Average distinct days with a lesson in the first 30 days after paying (identified users, first payment 30+ days ago)", "Active days, 1st 30d")}
+        {sortTh("days7", "Average distinct days with a lesson in the first 7 days after paying (identified users, first payment 7+ days ago)", "Active days, 1st 7d")}
+        {sortTh("days14", "Average distinct days with a lesson in the first 14 days after paying (first payment 14+ days ago). Underneath: share on 5+ of those days", "1st 14d")}
+        {sortTh("days", "Average distinct days with a lesson in the first 30 days after paying (first payment 30+ days ago). Underneath: share on 8+ of those days", "1st 30d")}
         {sortTh("zero", "Share with no lesson at all in their first 30 paid days", "No lessons, 1st 30d")}
       </tr>
     </thead>
@@ -307,8 +333,10 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
         Each store subscription is counted under the plan it <strong>started</strong> on (trial or first purchase since
         Mar 1, 2026), as of <strong>{asOf ? fmtDate(asOf) : "—"}</strong>. Every rate only counts subscriptions old
         enough to have reached that point — the small "kept / eligible" figure under each one. "Paying after N mo"
-        compares plan lengths fairly: a 3-month plan is ~100% at 1 and 2 months and first faces renewal at 3. Faded
-        cells are based on fewer than {SMALL_SAMPLE} subscriptions.
+        compares plan lengths fairly: a 3-month plan is ~100% at 1 and 2 months and first faces renewal at 3. To see
+        whether a new plan's users come back more often, sort by <strong>Active days, 1st 7d / 14d</strong> — those
+        fill in after a week or two, long before renewal numbers exist. Faded cells are based on fewer than{" "}
+        {SMALL_SAMPLE} subscriptions.
       </p>
 
       <div className="chart-container" style={{ marginTop: "1rem" }}>
