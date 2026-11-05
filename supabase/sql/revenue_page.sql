@@ -140,18 +140,29 @@ language sql stable security definer set search_path = public as $$
            -- '"role":"user"' substrings: json keeps the raw text, and this
            -- matches json_array_elements exactly (checked 2026-10-29) without
            -- parsing. Skipped when the lesson has a measured duration and an
-           -- exit_phase, so its transcript is never read.
-           case when (m.measured_min is null or cl.exit_phase is null)
-                     and json_typeof(cl.conversation_transcript) = 'array' then
+           -- exit_phase. Otherwise read from lesson_user_turns (filled by
+           -- fill_lesson_user_turns every 10 min — reading ~17k transcripts
+           -- here took 5.5s and hit the statement timeout); only lessons from
+           -- the last hour or so still parse their transcript inline.
+           case when m.measured_min is not null and cl.exit_phase is not null then null
+                when cl.cached then cl.cached_turns
+                when json_typeof(cl.conversation_transcript) = 'array' then
              (length(cl.conversation_transcript::text)
               - length(replace(cl.conversation_transcript::text, '"role":"user"', ''))) / 13 end as user_turns
     from subs su
-    join completed_lessons cl on cl.user_id = su.user_id
-      and cl.created_at >= su.sub_start - interval '1 day'
     cross join lateral (
+      select c.*, ut.lesson_row_id is not null as cached, ut.user_turns as cached_turns
+      from completed_lessons c
+      left join lesson_user_turns ut on ut.lesson_row_id = c.id
+      where c.user_id = su.user_id
+        and c.created_at >= su.sub_start - interval '1 day'
+    ) cl
+    cross join lateral (
+      -- received_at is epoch ms and turn_metrics is in turn order, so last -
+      -- first = max - min (0 mismatches over 35k lessons, 2026-11-04).
       select case when jsonb_typeof(cl.turn_metrics) = 'array' and jsonb_array_length(cl.turn_metrics) > 1 then
-               (select max((x->>'received_at')::numeric) - min((x->>'received_at')::numeric)  -- epoch ms
-                from jsonb_array_elements(cl.turn_metrics) x) / 60000 end as measured_min
+               ((cl.turn_metrics->-1->>'received_at')::numeric
+                - (cl.turn_metrics->0->>'received_at')::numeric) / 60000 end as measured_min
     ) m
     where cl.lesson_id is distinct from 42
   ), eng as (
