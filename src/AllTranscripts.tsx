@@ -543,13 +543,27 @@ function blendTier(blended: number, overall: number): "high" | "medium" | "low" 
   return rel >= 1.5 ? "high" : rel <= 0.6 ? "low" : "medium";
 }
 
+// Title of the lesson a row was for (lesson_titles RPC,
+// supabase/sql/lesson_titles.sql) — same as the User Lookup lesson cards.
+interface LessonTitle {
+  title: string | null;
+  kind: "catalog" | "custom" | "daily";
+}
+
+const LESSON_KIND_LABEL: Record<LessonTitle["kind"], string> = {
+  catalog: "Catalog",
+  custom: "Custom",
+  daily: "Daily",
+};
+
 const TranscriptCard: React.FC<{
   row: TranscriptRow;
   user?: UserMeta;
+  title?: LessonTitle;
   selected: boolean;
   countryConv: CountryConvData | null;
   onToggleSelect: (row: TranscriptRow) => void;
-}> = ({ row, user, selected, countryConv, onToggleSelect }) => {
+}> = ({ row, user, title, selected, countryConv, onToggleSelect }) => {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
@@ -743,7 +757,14 @@ const TranscriptCard: React.FC<{
             {user.first_lesson_at && ` · since ${format(new Date(user.first_lesson_at), "MMM d, yyyy")}`}
           </span>
         )}
-        <span className="lesson-card-lesson-id">Lesson #{row.lesson_id}</span>
+        <span className="lesson-card-lesson-id" title={`lesson_id ${row.lesson_id}`}>
+          {title?.title || `Lesson #${row.lesson_id}`}
+          {title && (
+            <span style={{ fontWeight: 400, color: "#9ca3af", marginLeft: 6 }}>
+              {LESSON_KIND_LABEL[title.kind]} · #{row.lesson_id}
+            </span>
+          )}
+        </span>
         <span className="lesson-card-date">
           {format(new Date(row.created_at), "MMM d, yyyy h:mm a")}
         </span>
@@ -1067,6 +1088,10 @@ const TranscriptCard: React.FC<{
 const AllTranscripts: React.FC = () => {
   const [rows, setRows] = useState<TranscriptRow[]>([]);
   const [userMeta, setUserMeta] = useState<Map<string, UserMeta>>(new Map());
+  const [lessonTitles, setLessonTitles] = useState<Map<number, LessonTitle>>(new Map());
+  // Lesson ids already sent to lesson_titles; titles don't change, so this is
+  // kept across lesson_id filter changes.
+  const fetchedLessonsRef = useRef<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Per-country×platform conversion rates for the blended on-card conversion
@@ -1178,6 +1203,28 @@ const AllTranscripts: React.FC = () => {
       });
       offsetRef.current = from + pageRows.length;
       if (pageRows.length < PAGE_SIZE) setHasMore(false);
+
+      // Titles are non-fatal — a tile without one falls back to "Lesson #id".
+      const newLessonIds = Array.from(new Set(pageRows.map((r) => r.lesson_id))).filter(
+        (id) => id != null && !fetchedLessonsRef.current.has(id),
+      );
+      if (newLessonIds.length > 0) {
+        newLessonIds.forEach((id) => fetchedLessonsRef.current.add(id));
+        void supabase.rpc("lesson_titles", { p_ids: newLessonIds }).then(({ data: titleData, error: titleErr }) => {
+          if (titleErr) {
+            console.warn("lesson_titles fetch failed:", titleErr.message);
+            newLessonIds.forEach((id) => fetchedLessonsRef.current.delete(id));
+            return;
+          }
+          setLessonTitles((prev) => {
+            const next = new Map(prev);
+            ((titleData as { lesson_id: number; title: string | null; kind: LessonTitle["kind"] }[]) ?? []).forEach(
+              (t) => next.set(Number(t.lesson_id), { title: t.title, kind: t.kind }),
+            );
+            return next;
+          });
+        });
+      }
 
       const newUserIds = Array.from(
         new Set(
@@ -1906,6 +1953,7 @@ const AllTranscripts: React.FC = () => {
             key={r.id}
             row={r}
             user={userMeta.get(r.user_id)}
+            title={lessonTitles.get(r.lesson_id)}
             selected={selected.has(r.id)}
             countryConv={countryConv}
             onToggleSelect={toggleSelect}
