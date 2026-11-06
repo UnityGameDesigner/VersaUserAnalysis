@@ -10,7 +10,7 @@ import { BUCKETS, BUCKET_COLORS, num, usd, planName, fmtDate } from "./lib/reven
 
 type Platform = "all" | "ios" | "android";
 type SortKey =
-  | "subscribers" | "trial" | "m1" | "m2" | "m3" | "m6" | "r1" | "refund" | "months" | "ltv"
+  | "subscribers" | "trial" | "m1" | "m2" | "m3" | "m6" | "r1" | "refund" | "months" | "ltv" | "arppu_mo"
   | "days7" | "days14" | "days" | "zero";
 
 interface PlanRow {
@@ -41,7 +41,8 @@ interface PlanRow {
   payments: number;
   gross: number;
   net: number;
-  paid_days: number;
+  paid_days: number; // paid coverage elapsed up to the as-of date
+  bought_days: number; // paid coverage bought, including periods not over yet
   // Distinct days with a lesson in the first 7 / 14 / 30 days after paying,
   // each over the identified subscribers at least that old.
   eng7_elig: number;
@@ -59,7 +60,7 @@ interface PlanRow {
 const COUNT_KEYS = [
   "trials", "trials_resolved", "trials_converted", "subscribers", "r1_elig", "r1_kept", "r2_elig", "r2_kept",
   "m1_elig", "m1_kept", "m2_elig", "m2_kept", "m3_elig", "m3_kept", "m6_elig", "m6_kept", "active_now",
-  "refunded", "payments", "gross", "net", "paid_days", "eng7_elig", "eng7_days", "eng14_elig", "eng14_days",
+  "refunded", "payments", "gross", "net", "paid_days", "bought_days", "eng7_elig", "eng7_days", "eng14_elig", "eng14_days",
   "eng14_regular", "eng_elig", "eng_days", "eng_zero", "eng_weekly",
 ] as const;
 
@@ -93,7 +94,10 @@ function metric(r: PlanRow, k: SortKey): number | null {
     case "r1": return rate(r.r1_kept, r.r1_elig);
     case "refund": return r.subscribers >= MIN_SHOWN ? r.refunded / r.subscribers : null;
     case "months": return r.subscribers ? r.paid_days / 30.44 / r.subscribers : null;
-    case "ltv": return r.subscribers ? r.net / r.subscribers : null;
+    // ARPPU to date: gross per paying subscriber. Per month: gross per month of
+    // access bought — the effective monthly price after intro offers and refunds.
+    case "ltv": return r.subscribers ? r.gross / r.subscribers : null;
+    case "arppu_mo": return r.bought_days > 0 ? r.gross / (r.bought_days / 30.44) : null;
     case "days7": return r.eng7_elig >= MIN_SHOWN ? r.eng7_days / r.eng7_elig : null;
     case "days14": return r.eng14_elig >= MIN_SHOWN ? r.eng14_days / r.eng14_elig : null;
     case "days": return r.eng_elig >= MIN_SHOWN ? r.eng_days / r.eng_elig : null;
@@ -187,7 +191,7 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
   const ranges = useMemo(() => {
     const m = new Map<SortKey, [number, number]>();
     for (const k of [
-      "trial", "m1", "m2", "m3", "m6", "r1", "refund", "months", "ltv", "days7", "days14", "days", "zero",
+      "trial", "m1", "m2", "m3", "m6", "r1", "refund", "months", "ltv", "arppu_mo", "days7", "days14", "days", "zero",
     ] as SortKey[]) {
       const vs = shown.map((r) => ranked(r, k)).filter((v): v is number => v != null);
       if (vs.length) m.set(k, [Math.min(...vs), Math.max(...vs)]);
@@ -279,6 +283,8 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
     const months = metric(r, "months");
     const ltv = metric(r, "ltv");
     const ltvRange = ranges.get("ltv");
+    const arppuMo = metric(r, "arppu_mo");
+    const moRange = ranges.get("arppu_mo");
     return (
       <tr key={(isLength ? "len:" : "") + r.product_id} style={isLength ? { fontWeight: 600 } : undefined}>
         <td title={r.product_id}>
@@ -316,7 +322,15 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
         </td>
         <td style={{ whiteSpace: "nowrap", ...(!isLength && ltvRange ? heat(ltv, ltvRange[0], ltvRange[1]) : {}) }}>
           {ltv == null ? "—" : usd(ltv, 2)}
-          <div style={{ fontSize: 11, color: "#6b7280" }}>{usd(r.net)} net</div>
+          <div style={{ fontSize: 11, color: "#6b7280" }}>
+            {r.subscribers ? `${usd(r.net / r.subscribers, 2)} net` : "—"}
+          </div>
+        </td>
+        <td style={{ whiteSpace: "nowrap", ...(!isLength && moRange ? heat(arppuMo, moRange[0], moRange[1]) : {}) }}>
+          {arppuMo == null ? "—" : usd(arppuMo, 2)}
+          <div style={{ fontSize: 11, color: "#6b7280" }}>
+            {arppuMo == null || !r.gross ? "—" : `${usd((arppuMo * r.net) / r.gross, 2)} net`}
+          </div>
         </td>
         {daysCell(r, "days7", r.eng7_elig, `${r.eng7_elig} users`, !isLength,
           `${r.eng7_elig} identified subscribers whose first payment was 7+ days ago`)}
@@ -343,7 +357,8 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
         <th title="Of those who renewed once, the share who renewed again">2nd renewal</th>
         {sortTh("refund", "Share of subscribers with a refund", "Refunded")}
         {sortTh("months", "Average months of paid coverage per subscriber so far (up to the as-of date)", "Paid months")}
-        {sortTh("ltv", "Net revenue (after store fees and refunds) per subscriber so far", "Net / subscriber")}
+        {sortTh("ltv", "Average revenue per paying user so far: gross per subscriber since they started. Underneath: net, after store fees and refunds", "ARPPU")}
+        {sortTh("arppu_mo", "ARPPU per month: gross per month of access bought (a yearly plan's price spread over 12 months), i.e. the effective monthly price after intro offers and refunds. Underneath: net", "ARPPU / mo")}
         {sortTh("days7", "Average distinct days with a lesson in the first 7 days after paying (identified users, first payment 7+ days ago)", "Active days, 1st 7d")}
         {sortTh("days14", "Average distinct days with a lesson in the first 14 days after paying (first payment 14+ days ago). Underneath: share on 5+ of those days", "1st 14d")}
         {sortTh("days", "Average distinct days with a lesson in the first 30 days after paying (first payment 30+ days ago). Underneath: share on 8+ of those days", "1st 30d")}

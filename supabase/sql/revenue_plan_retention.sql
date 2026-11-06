@@ -116,6 +116,10 @@ language sql stable security definer set search_path = public as $$
            coalesce(sum(s.net) filter (where s.payments > 0), 0) as net,
            coalesce(sum(extract(epoch from least(s.covered_to, a.d::timestamptz) - s.first_paid_at) / 86400)
                     filter (where s.payments > 0), 0) as paid_days,
+           -- Months of access bought (including periods not over yet), so a
+           -- yearly plan paid upfront isn't priced per elapsed month.
+           coalesce(sum(extract(epoch from s.covered_to - s.first_paid_at) / 86400)
+                    filter (where s.payments > 0), 0) as bought_days,
            count(e.chain) as eng7_elig,
            coalesce(sum(e.days7), 0) as eng7_days,
            count(*) filter (where e.e14) as eng14_elig,
@@ -151,6 +155,7 @@ language sql stable security definer set search_path = public as $$
            'gross', round(pp.gross, 2),
            'net', round(pp.net, 2),
            'paid_days', round(pp.paid_days),
+           'bought_days', round(pp.bought_days),
            'eng7_elig', pp.eng7_elig, 'eng7_days', pp.eng7_days,
            'eng14_elig', pp.eng14_elig, 'eng14_days', pp.eng14_days, 'eng14_regular', pp.eng14_regular,
            'eng_elig', pp.eng_elig, 'eng_days', pp.eng_days, 'eng_zero', pp.eng_zero, 'eng_weekly', pp.eng_weekly,
