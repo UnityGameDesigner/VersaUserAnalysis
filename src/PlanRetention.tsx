@@ -17,6 +17,7 @@ interface PlanRow {
   product_id: string;
   platform: string;
   bucket: string;
+  period_months: number | null; // plan length (weekly = 0.25); null = one-off
   list_price_usd: number | null;
   trial_days: number | null;
   trials: number;
@@ -67,6 +68,18 @@ const SMALL_SAMPLE = 20;
 const MIN_SHOWN = 5;
 
 const rate = (kept: number, elig: number) => (elig >= MIN_SHOWN ? kept / elig : null);
+
+// "Paying after N months" only says something about retention once the plan has
+// come up for renewal by month N. Before that (a yearly plan at 1–6 months, a
+// 3-month plan at 1–2) it's ~100% by construction — only refunds lower it — so
+// those cells aren't shaded or ranked against plans that did face a renewal.
+const CHECKPOINT_MONTHS: Partial<Record<SortKey, number>> = { m1: 1, m2: 2, m3: 3, m6: 6 };
+function renewalDue(r: PlanRow, k: SortKey): boolean {
+  const n = CHECKPOINT_MONTHS[k];
+  return n == null || (r.period_months != null && n >= r.period_months);
+}
+// The value a column is sorted and shaded by: null where it isn't a retention signal.
+const ranked = (r: PlanRow, k: SortKey) => (renewalDue(r, k) ? metric(r, k) : null);
 
 // Sort / compare value for each sortable column; null sorts last.
 function metric(r: PlanRow, k: SortKey): number | null {
@@ -132,6 +145,7 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
                 product_id: String(r.product_id),
                 platform: String(r.platform ?? ""),
                 bucket: String(r.bucket ?? ""),
+                period_months: r.period_months == null ? null : num(r.period_months),
                 list_price_usd: r.list_price_usd == null ? null : num(r.list_price_usd),
                 trial_days: r.trial_days == null ? null : num(r.trial_days),
                 as_of: String(r.as_of),
@@ -166,7 +180,7 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
         (bucket === "all" || r.bucket === bucket) &&
         (!hideSmall || r.subscribers >= SMALL_SAMPLE),
     );
-    return out.sort((a, b) => (metric(b, sort) ?? -Infinity) - (metric(a, sort) ?? -Infinity));
+    return out.sort((a, b) => (ranked(b, sort) ?? -Infinity) - (ranked(a, sort) ?? -Infinity));
   }, [rows, bucket, hideSmall, sort]);
 
   // Column ranges for the heat shading, over the plans on screen.
@@ -175,7 +189,7 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
     for (const k of [
       "trial", "m1", "m2", "m3", "m6", "r1", "refund", "months", "ltv", "days7", "days14", "days", "zero",
     ] as SortKey[]) {
-      const vs = shown.map((r) => metric(r, k)).filter((v): v is number => v != null);
+      const vs = shown.map((r) => ranked(r, k)).filter((v): v is number => v != null);
       if (vs.length) m.set(k, [Math.min(...vs), Math.max(...vs)]);
     }
     return m;
@@ -216,6 +230,17 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
   const rateCell = (r: PlanRow, k: SortKey, kept: number, elig: number, shade: boolean, invert = false) => {
     const v = metric(r, k);
     const range = ranges.get(k);
+    if (!renewalDue(r, k)) {
+      return (
+        <td
+          style={{ whiteSpace: "nowrap", color: "#9ca3af" }}
+          title={`No renewal is due by month ${CHECKPOINT_MONTHS[k]} on a ${r.bucket.toLowerCase()} plan, so this is ~100% by default — only refunds lower it. Not a retention signal.`}
+        >
+          {pctText(v)}
+          <div style={{ fontSize: 11 }}>before 1st renewal</div>
+        </td>
+      );
+    }
     return (
       <td
         style={{
@@ -379,7 +404,9 @@ const PlanRetention: React.FC<{ platform: Platform }> = ({ platform }) => {
           </div>
         )}
         <p className="ret-chart-sub" style={{ marginTop: "0.5rem" }}>
-          Shading compares plans within each column (green = better). Click a column header to sort.
+          Shading compares plans within each column (green = better). Grey "before 1st renewal" cells — e.g. a yearly
+          plan at 1–6 months — aren't shaded or ranked, since nobody on that plan could have churned yet. Click a column
+          header to sort.
         </p>
       </div>
     </>
