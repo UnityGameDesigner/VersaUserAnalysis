@@ -29,6 +29,7 @@ import { chatAboutUser, type ChatMessage } from "./lib/userChat";
 import { analyzeCancellation, reasonMeta, type CancelAnalysis } from "./lib/analyzeCancellation";
 import { getCancelAnalysis, saveCancelAnalysis } from "./lib/cancelAnalysisStore";
 import LearningJourneyPanel from "./LearningJourneyPanel";
+import UserProfileDetails from "./UserProfileDetails";
 import { format } from "date-fns";
 
 // A full user id goes straight to the profile; anything else is an email search.
@@ -1794,6 +1795,9 @@ const UserLookup: React.FC<{ initialUserId?: string | null }> = ({ initialUserId
                 </div>
               )}
             </div>
+
+            {/* Everything else we hold on this user (user_profile_details RPC) */}
+            <UserProfileDetails userId={user.user_id} previousExperience={user.previous_experience} />
 
             {/* Goal progress + skill development */}
             <GoalsSkillsPanel goals={goals} skills={skills} />
