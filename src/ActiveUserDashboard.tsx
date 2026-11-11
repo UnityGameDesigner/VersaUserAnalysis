@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import "./App.css";
 import { supabase } from "./lib/supabase";
 import { getCountryFromTimezone } from "./lib/timezone";
+import { speakingAbility } from "./lib/onboardingAssessment";
 import {
   BarChart,
   Bar,
@@ -57,6 +58,170 @@ interface ActiveUser {
   payment_status: string;
   demand_tier: string | null;
   reason: string | null;
+  // Only used by the sort options (SORT_FIELDS).
+  level: string | null;
+  tutor_accent: string | null;
+  creator_slug: string | null;
+  messaging_platform: string | null;
+  platform: string | null;
+  completed_tutorial: boolean | null;
+  left_review: boolean | null;
+  upsell: boolean | null;
+  is_pro: boolean | null;
+  lesson_credits: number | null;
+  last_completed_at: string | null;
+  last_active_local_date: string | null;
+  last_notification_at: string | null;
+  trial_started_at: string | null;
+  became_active_at: string | null;
+  access_expires_at: string | null;
+  goal_target_date: string | null;
+  previous_experience: string | null;
+}
+
+// user_id → user_revenue figures (dashboard_user_revenue RPC).
+interface UserRevenue {
+  payments: number;
+  gross_usd: number;
+  net_usd: number;
+  first_paid_at: string | null;
+  last_paid_at: string | null;
+  current_product_id: string | null;
+}
+
+// Everything a sort option can read besides the user row itself.
+interface SortCtx {
+  firstLesson: Map<string, string>;
+  uniqueDays: Map<string, number>;
+  engagement: Map<string, { lessons: number; turns: number; days: number }> | null;
+  pastDue: Map<string, string>;
+  revenue: Map<string, UserRevenue>;
+}
+
+type SortValue = string | number | boolean | null;
+
+// One entry per "Sort by" option. `value` reads the field (null = missing,
+// always sorted last whichever way); `desc` is the default direction when the
+// option is picked; `column` marks fields the table already shows, so the
+// extra "sorted by" column only appears for the rest. `compare` replaces the
+// plain value comparison for the composite sorts.
+interface SortField {
+  key: string;
+  label: string;
+  group: string;
+  type: "text" | "number" | "date" | "bool" | "usd";
+  desc: boolean;
+  column?: boolean;
+  value: (u: ActiveUser, c: SortCtx) => SortValue;
+  compare?: (a: ActiveUser, b: ActiveUser, c: SortCtx) => number;
+}
+
+const time = (v: string | null | undefined) => {
+  if (!v) return null;
+  const t = new Date(v).getTime();
+  return Number.isNaN(t) ? null : t;
+};
+const ageOf = (u: ActiveUser) => {
+  const n = Number(u.age);
+  return u.age === null || !Number.isFinite(n) || n <= 0 ? null : n;
+};
+const statusRank = (s: string | null) =>
+  s === "ACTIVE" ? 0 : s === "TRIAL" ? 1 : s === "PAST_DUE" ? 2 : 3;
+
+const SORT_FIELDS: SortField[] = [
+  // Activity
+  { key: "lastLoggedIn", label: "Last logged in", group: "Activity", type: "date", desc: true, column: true, value: (u) => time(u.last_logged_in) },
+  { key: "lastCompleted", label: "Last lesson completed", group: "Activity", type: "date", desc: true, value: (u) => time(u.last_completed_at) },
+  { key: "lastActiveLocal", label: "Last active day (local)", group: "Activity", type: "date", desc: true, value: (u) => time(u.last_active_local_date) },
+  { key: "firstLesson", label: "First lesson", group: "Activity", type: "date", desc: false, column: true, value: (u, c) => time(c.firstLesson.get(u.user_id)) },
+  { key: "uniqueDays", label: "Days used", group: "Activity", type: "number", desc: true, column: true, value: (u, c) => c.uniqueDays.get(u.user_id) ?? 0 },
+  {
+    key: "engagement", label: "Engagement (active days, then turns)", group: "Activity", type: "number", desc: true, column: true,
+    value: (u, c) => c.engagement?.get(u.user_id)?.days ?? null,
+    // The BIGGEST factor is distinct active days — coming back on many
+    // different days beats a lot of talking in one sitting. Total turns break
+    // ties, then lessons.
+    compare: (a, b, c) => {
+      const ae = c.engagement?.get(a.user_id);
+      const be = c.engagement?.get(b.user_id);
+      return (ae?.days ?? -1) - (be?.days ?? -1) || (ae?.turns ?? -1) - (be?.turns ?? -1) || (ae?.lessons ?? 0) - (be?.lessons ?? 0);
+    },
+  },
+  { key: "lessons", label: "Lessons (spoke in)", group: "Activity", type: "number", desc: true, value: (u, c) => c.engagement?.get(u.user_id)?.lessons ?? null },
+  { key: "turns", label: "Total turns spoken", group: "Activity", type: "number", desc: true, value: (u, c) => c.engagement?.get(u.user_id)?.turns ?? null },
+  {
+    key: "turnsPerLesson", label: "Turns per lesson", group: "Activity", type: "number", desc: true,
+    value: (u, c) => {
+      const e = c.engagement?.get(u.user_id);
+      return e && e.lessons > 0 ? Math.round((e.turns / e.lessons) * 10) / 10 : null;
+    },
+  },
+  { key: "streak", label: "Streak", group: "Activity", type: "number", desc: true, column: true, value: (u) => u.daily_streak ?? null },
+  { key: "credits", label: "Lesson credits", group: "Activity", type: "number", desc: true, value: (u) => u.lesson_credits },
+  { key: "lastNotification", label: "Last notification", group: "Activity", type: "date", desc: true, value: (u) => time(u.last_notification_at) },
+  // Profile
+  { key: "name", label: "Name", group: "Profile", type: "text", desc: false, column: true, value: (u) => u.preferred_name || null },
+  { key: "age", label: "Age", group: "Profile", type: "number", desc: false, column: true, value: ageOf },
+  { key: "gender", label: "Gender", group: "Profile", type: "text", desc: false, column: true, value: (u) => u.gender || null },
+  { key: "country", label: "Country", group: "Profile", type: "text", desc: false, column: true, value: (u) => (u.time_zone ? getCountryFromTimezone(u.time_zone) : null) },
+  { key: "timezone", label: "Timezone", group: "Profile", type: "text", desc: false, value: (u) => u.time_zone || null },
+  { key: "nativeLanguage", label: "Native language", group: "Profile", type: "text", desc: false, column: true, value: (u) => u.native_language || null },
+  { key: "learningLanguage", label: "Learning language", group: "Profile", type: "text", desc: false, value: (u) => u.learning_language || null },
+  { key: "level", label: "Level", group: "Profile", type: "text", desc: false, value: (u) => u.level || null },
+  {
+    key: "speaking", label: "Speaking ability (onboarding)", group: "Profile", type: "number", desc: true,
+    value: (u) => speakingAbility(u.previous_experience)?.level ?? null,
+  },
+  { key: "reason", label: "Reason for learning", group: "Profile", type: "text", desc: false, value: (u) => u.reason || null },
+  { key: "tutor", label: "Tutor", group: "Profile", type: "text", desc: false, column: true, value: (u) => u.tutor || null },
+  { key: "tutorAccent", label: "Tutor accent", group: "Profile", type: "text", desc: false, value: (u) => u.tutor_accent || null },
+  { key: "tier", label: "Demand tier", group: "Profile", type: "text", desc: false, column: true, value: (u) => u.demand_tier || null },
+  { key: "attribution", label: "Source (attribution)", group: "Profile", type: "text", desc: false, column: true, value: (u) => u.attribution || null },
+  { key: "creator", label: "Creator", group: "Profile", type: "text", desc: false, value: (u) => u.creator_slug || null },
+  { key: "messaging", label: "Messaging app", group: "Profile", type: "text", desc: false, value: (u) => u.messaging_platform || null },
+  { key: "platform", label: "Device platform", group: "Profile", type: "text", desc: false, value: (u) => u.platform || null },
+  { key: "tutorial", label: "Completed tutorial", group: "Profile", type: "bool", desc: true, value: (u) => u.completed_tutorial },
+  { key: "leftReview", label: "Left a review", group: "Profile", type: "bool", desc: true, value: (u) => u.left_review },
+  { key: "upsell", label: "Upsell", group: "Profile", type: "bool", desc: true, value: (u) => u.upsell },
+  { key: "pro", label: "Pro", group: "Profile", type: "bool", desc: true, value: (u) => u.is_pro },
+  { key: "goalTarget", label: "Goal target date", group: "Profile", type: "date", desc: false, value: (u) => time(u.goal_target_date) },
+  // Subscription & revenue
+  {
+    key: "status", label: "Payment status (active first)", group: "Subscription & revenue", type: "text", desc: false, column: true,
+    value: (u) => u.payment_status || null,
+    // Group by status, newest login first within each group.
+    compare: (a, b) =>
+      statusRank(a.payment_status) - statusRank(b.payment_status) ||
+      (time(b.last_logged_in) ?? 0) - (time(a.last_logged_in) ?? 0),
+  },
+  { key: "trialStarted", label: "Trial started", group: "Subscription & revenue", type: "date", desc: true, value: (u) => time(u.trial_started_at) },
+  { key: "becameActive", label: "Became paying", group: "Subscription & revenue", type: "date", desc: true, value: (u) => time(u.became_active_at) },
+  {
+    key: "daysToConvert", label: "Days from trial to paying", group: "Subscription & revenue", type: "number", desc: false,
+    value: (u) => {
+      const t = time(u.trial_started_at);
+      const p = time(u.became_active_at);
+      return t != null && p != null && p >= t ? Math.round(((p - t) / 86400000) * 10) / 10 : null;
+    },
+  },
+  { key: "billingIssue", label: "Billing issue", group: "Subscription & revenue", type: "date", desc: true, value: (u, c) => time(c.pastDue.get(u.user_id)) },
+  { key: "accessExpires", label: "Access expires", group: "Subscription & revenue", type: "date", desc: false, value: (u) => time(u.access_expires_at) },
+  { key: "plan", label: "Current plan", group: "Subscription & revenue", type: "text", desc: false, value: (u, c) => c.revenue.get(u.user_id)?.current_product_id ?? null },
+  { key: "firstPaid", label: "First payment", group: "Subscription & revenue", type: "date", desc: true, value: (u, c) => time(c.revenue.get(u.user_id)?.first_paid_at) },
+  { key: "lastPaid", label: "Latest payment", group: "Subscription & revenue", type: "date", desc: true, value: (u, c) => time(c.revenue.get(u.user_id)?.last_paid_at) },
+  { key: "payments", label: "Payments", group: "Subscription & revenue", type: "number", desc: true, value: (u, c) => c.revenue.get(u.user_id)?.payments ?? null },
+  { key: "gross", label: "Revenue (gross)", group: "Subscription & revenue", type: "usd", desc: true, value: (u, c) => c.revenue.get(u.user_id)?.gross_usd ?? null },
+  { key: "net", label: "Revenue (net)", group: "Subscription & revenue", type: "usd", desc: true, value: (u, c) => c.revenue.get(u.user_id)?.net_usd ?? null },
+];
+const SORT_GROUPS = Array.from(new Set(SORT_FIELDS.map((f) => f.group)));
+
+function formatSortValue(f: SortField, v: SortValue): string {
+  if (v === null) return "—";
+  if (f.type === "date") return new Date(v as number).toLocaleDateString();
+  if (f.type === "bool") return v ? "Yes" : "No";
+  if (f.type === "usd") return `$${Number(v).toFixed(2)}`;
+  if (typeof v === "number") return v.toLocaleString();
+  return String(v);
 }
 
 // Format an ISO timestamp into a short, locale-aware date for table display.
@@ -141,6 +306,8 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   // defensively: if the column isn't migrated in yet the dashboard still works
   // and the Billing Issue column just shows "—".
   const [pastDueDateMap, setPastDueDateMap] = useState<Map<string, string>>(new Map());
+  // user_id → revenue, for the revenue sort options. Empty if the RPC fails.
+  const [revenueMap, setRevenueMap] = useState<Map<string, UserRevenue>>(new Map());
   const [loading, setLoading] = useState<boolean>(true);
 
   // Measure container width for grid layout
@@ -169,6 +336,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const [selectedLanguage, setSelectedLanguage] = useState<string>("All");
   const [selectedGender, setSelectedGender] = useState<string>("All");
   const [sortBy, setSortBy] = useState<string>("lastLoggedIn");
+  const [sortDesc, setSortDesc] = useState<boolean>(true);
   const mapTooltipRef = React.useRef<HTMLDivElement>(null);
 
   // Fetch ACTIVE + TRIAL users. The user_info table holds ~230k rows, but the
@@ -216,7 +384,25 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
               attribution,
               payment_status,
               demand_tier,
-              reason
+              reason,
+              level,
+              tutor_accent,
+              creator_slug,
+              messaging_platform,
+              platform,
+              completed_tutorial,
+              left_review,
+              upsell,
+              is_pro,
+              lesson_credits,
+              last_completed_at,
+              last_active_local_date,
+              last_notification_at,
+              trial_started_at,
+              became_active_at,
+              access_expires_at,
+              goal_target_date,
+              previous_experience
             `)
             .in("payment_status", PAYMENT_STATUSES)
             .gt("id", lastId)
@@ -314,6 +500,22 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
               }),
           );
           setEngagementMap(map);
+        }
+
+        // Revenue per user for the revenue sorts. Non-fatal — those sorts just
+        // put everyone in "missing" if it fails.
+        const { data: revRows, error: revErr } = await supabase.rpc("dashboard_user_revenue");
+        if (revErr) {
+          console.warn("dashboard_user_revenue unavailable — revenue sorts will be empty:", revErr.message);
+        } else {
+          setRevenueMap(
+            new Map(
+              ((revRows as (UserRevenue & { user_id: string })[] | null) ?? []).map((r) => [
+                r.user_id,
+                { ...r, payments: Number(r.payments), gross_usd: Number(r.gross_usd), net_usd: Number(r.net_usd) },
+              ]),
+            ),
+          );
         }
 
         // Billing-issue dates for past-due users. Separate + defensive so a
@@ -488,103 +690,31 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   }, [rawLessons]);
 
   // ── Sorted users ──
+  const sortField = SORT_FIELDS.find((f) => f.key === sortBy) ?? SORT_FIELDS[0];
+  const sortCtx = useMemo<SortCtx>(
+    () => ({
+      firstLesson: firstLessonMap,
+      uniqueDays: uniqueDaysMap,
+      engagement: engagementMap,
+      pastDue: pastDueDateMap,
+      revenue: revenueMap,
+    }),
+    [firstLessonMap, uniqueDaysMap, engagementMap, pastDueDateMap, revenueMap],
+  );
   const sortedUsers = useMemo(() => {
-    const sorted = [...filteredUsers];
-    switch (sortBy) {
-      case "firstLesson":
-        sorted.sort((a, b) => {
-          const aTime = firstLessonMap.get(a.user_id);
-          const bTime = firstLessonMap.get(b.user_id);
-          if (!aTime && !bTime) return 0;
-          if (!aTime) return 1;
-          if (!bTime) return -1;
-          return new Date(aTime).getTime() - new Date(bTime).getTime();
-        });
-        break;
-      case "firstLessonDesc":
-        sorted.sort((a, b) => {
-          const aTime = firstLessonMap.get(a.user_id);
-          const bTime = firstLessonMap.get(b.user_id);
-          if (!aTime && !bTime) return 0;
-          if (!aTime) return 1;
-          if (!bTime) return -1;
-          return new Date(bTime).getTime() - new Date(aTime).getTime();
-        });
-        break;
-      case "lastLoggedIn":
-        sorted.sort((a, b) => {
-          const aTime = a.last_logged_in ? new Date(a.last_logged_in).getTime() : 0;
-          const bTime = b.last_logged_in ? new Date(b.last_logged_in).getTime() : 0;
-          return bTime - aTime;
-        });
-        break;
-      case "name":
-        sorted.sort((a, b) =>
-          (a.preferred_name || "").localeCompare(b.preferred_name || ""),
-        );
-        break;
-      case "streak":
-        sorted.sort((a, b) => b.daily_streak - a.daily_streak);
-        break;
-      case "uniqueDays":
-        sorted.sort((a, b) => {
-          const aDays = uniqueDaysMap.get(a.user_id) ?? 0;
-          const bDays = uniqueDaysMap.get(b.user_id) ?? 0;
-          return bDays - aDays;
-        });
-        break;
-      case "status":
-        // Group by payment status (Active, then Trial, then Past Due), newest
-        // login first within each group.
-        sorted.sort((a, b) => {
-          const rank = (s: string | null) =>
-            s === "ACTIVE" ? 0 : s === "TRIAL" ? 1 : s === "PAST_DUE" ? 2 : 3;
-          const byStatus = rank(a.payment_status) - rank(b.payment_status);
-          if (byStatus !== 0) return byStatus;
-          const aTime = a.last_logged_in ? new Date(a.last_logged_in).getTime() : 0;
-          const bTime = b.last_logged_in ? new Date(b.last_logged_in).getTime() : 0;
-          return bTime - aTime;
-        });
-        break;
-      case "billingIssue":
-        // Most recent billing issue first; users with no recorded date last.
-        sorted.sort((a, b) => {
-          const ad = pastDueDateMap.get(a.user_id);
-          const bd = pastDueDateMap.get(b.user_id);
-          const at = ad ? new Date(ad).getTime() : -Infinity;
-          const bt = bd ? new Date(bd).getTime() : -Infinity;
-          return bt - at;
-        });
-        break;
-      case "engagement":
-        // Most engaged first. The BIGGEST factor is distinct active days —
-        // coming back on many different days beats a lot of talking in one
-        // sitting. Total turns (depth) only breaks ties between equal day counts,
-        // then lessons. Users with no engagement data sort last.
-        sorted.sort((a, b) => {
-          const ae = engagementMap?.get(a.user_id);
-          const be = engagementMap?.get(b.user_id);
-          const ad = ae?.days ?? -1;
-          const bd = be?.days ?? -1;
-          if (bd !== ad) return bd - ad;
-          const at = ae?.turns ?? -1;
-          const bt = be?.turns ?? -1;
-          if (bt !== at) return bt - at;
-          return (be?.lessons ?? 0) - (ae?.lessons ?? 0);
-        });
-        break;
-      case "age":
-        sorted.sort((a, b) => {
-          const aAge = a.age === null || a.age === -1 ? Infinity : a.age;
-          const bAge = b.age === null || b.age === -1 ? Infinity : b.age;
-          return aAge - bAge;
-        });
-        break;
-      default:
-        break;
-    }
-    return sorted;
-  }, [filteredUsers, sortBy, firstLessonMap, uniqueDaysMap, engagementMap, pastDueDateMap]);
+    const f = sortField;
+    const dir = sortDesc ? -1 : 1;
+    const vals = new Map(filteredUsers.map((u) => [u.user_id, f.value(u, sortCtx)]));
+    return [...filteredUsers].sort((a, b) => {
+      if (f.compare) return dir * f.compare(a, b, sortCtx);
+      const av = vals.get(a.user_id) ?? null;
+      const bv = vals.get(b.user_id) ?? null;
+      // Missing values go last whichever way the sort runs.
+      if (av === null || bv === null) return av === null ? (bv === null ? 0 : 1) : -1;
+      if (typeof av === "string" && typeof bv === "string") return dir * av.localeCompare(bv);
+      return dir * (Number(av) - Number(bv));
+    });
+  }, [filteredUsers, sortField, sortDesc, sortCtx]);
 
   // ── Computed Data (all based on filteredUsers) ────
   const activeCount = useMemo(
@@ -872,6 +1002,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 // back to a default if we leave it so the sort stays valid.
                 if (c.key !== "PAST_DUE" && sortBy === "billingIssue") {
                   setSortBy("lastLoggedIn");
+                  setSortDesc(true);
                 }
               }}
             >
@@ -1266,21 +1397,39 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
               <select
                 className="filter-select"
                 value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
+                onChange={(e) => {
+                  const f = SORT_FIELDS.find((x) => x.key === e.target.value);
+                  setSortBy(e.target.value);
+                  if (f) setSortDesc(f.desc);
+                }}
               >
-                <option value="lastLoggedIn">Last Logged In</option>
-                <option value="firstLesson">First Lesson (oldest first)</option>
-                <option value="firstLessonDesc">First Lesson (newest first)</option>
-                <option value="name">Name (A-Z)</option>
-                <option value="streak">Streak (highest first)</option>
-                <option value="uniqueDays">Days Used (most first)</option>
-                <option value="engagement">Engagement (most active days)</option>
-                {selectedStatus === "PAST_DUE" && (
-                  <option value="billingIssue">Billing Issue (recent first)</option>
-                )}
-                <option value="status">Payment Status (active first)</option>
-                <option value="age">Age (youngest first)</option>
+                {SORT_GROUPS.map((g) => (
+                  <optgroup key={g} label={g}>
+                    {SORT_FIELDS.filter((f) => f.group === g)
+                      // The billing-issue date only exists for past-due users.
+                      .filter((f) => f.key !== "billingIssue" || selectedStatus === "PAST_DUE")
+                      .map((f) => (
+                        <option key={f.key} value={f.key}>
+                          {f.label}
+                        </option>
+                      ))}
+                  </optgroup>
+                ))}
               </select>
+              <button
+                type="button"
+                className="filter-select"
+                onClick={() => setSortDesc((d) => !d)}
+                title="Reverse the sort order (users missing this value always stay at the bottom)"
+              >
+                {sortField.type === "text"
+                  ? sortDesc ? "Z → A" : "A → Z"
+                  : sortField.type === "bool"
+                    ? sortDesc ? "Yes first" : "No first"
+                    : sortField.type === "date"
+                      ? sortDesc ? "Newest first" : "Oldest first"
+                      : sortDesc ? "Highest first" : "Lowest first"}
+              </button>
             </label>
             {engagementError && (
               <span className="eng-warning" title={engagementError}>
@@ -1317,6 +1466,9 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                       >
                         Engagement
                       </th>
+                      {!sortField.column && !(sortField.key === "billingIssue" && selectedStatus === "PAST_DUE") && (
+                        <th title="The field the table is sorted by">{sortField.label}</th>
+                      )}
                       {selectedStatus === "PAST_DUE" && (
                         <th title="When the user hit the billing issue (entered past-due). Only recorded for billing issues since tracking was added; older ones show —.">
                           Billing Issue
@@ -1419,6 +1571,9 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                             );
                           })()}
                         </td>
+                        {!sortField.column && !(sortField.key === "billingIssue" && selectedStatus === "PAST_DUE") && (
+                          <td>{formatSortValue(sortField, sortField.value(user, sortCtx))}</td>
+                        )}
                         {selectedStatus === "PAST_DUE" && (
                           <td>
                             {pastDueDateMap.get(user.user_id) ? (
