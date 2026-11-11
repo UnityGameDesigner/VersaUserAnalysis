@@ -215,6 +215,37 @@ const SORT_FIELDS: SortField[] = [
 ];
 const SORT_GROUPS = Array.from(new Set(SORT_FIELDS.map((f) => f.group)));
 
+// A filter on any SORT_FIELDS field, added from the "+ Add filter" menu.
+// `value`: "" = any, "__present" / "__missing" = has / lacks a value, else an
+// exact text value or "true" / "false". `min` / `max` bound number, $ and date
+// fields (dates as yyyy-mm-dd, both ends inclusive).
+interface FieldFilter {
+  key: string;
+  value: string;
+  min: string;
+  max: string;
+}
+
+// Fields that already have their own dropdown in the filter bar (or the cohort
+// segment, for status), so they aren't offered again under "+ Add filter".
+const DEDICATED_FILTER_KEYS = new Set(["country", "attribution", "tutor", "tier", "gender", "nativeLanguage", "status"]);
+
+function matchesFieldFilter(f: SortField, flt: FieldFilter, v: SortValue): boolean {
+  if (flt.value === "__missing") return v === null;
+  if (flt.value === "__present") return v !== null;
+  if (flt.value !== "" && String(v) !== flt.value) return false;
+  if (f.type === "number" || f.type === "usd") {
+    if (flt.min !== "" && (v === null || Number(v) < Number(flt.min))) return false;
+    if (flt.max !== "" && (v === null || Number(v) > Number(flt.max))) return false;
+  }
+  if (f.type === "date") {
+    // Local-midnight bounds; `max` covers that whole day.
+    if (flt.min !== "" && (v === null || Number(v) < new Date(`${flt.min}T00:00:00`).getTime())) return false;
+    if (flt.max !== "" && (v === null || Number(v) > new Date(`${flt.max}T23:59:59.999`).getTime())) return false;
+  }
+  return true;
+}
+
 function formatSortValue(f: SortField, v: SortValue): string {
   if (v === null) return "—";
   if (f.type === "date") return new Date(v as number).toLocaleDateString();
@@ -337,6 +368,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const [selectedGender, setSelectedGender] = useState<string>("All");
   const [sortBy, setSortBy] = useState<string>("lastLoggedIn");
   const [sortDesc, setSortDesc] = useState<boolean>(true);
+  const [fieldFilters, setFieldFilters] = useState<FieldFilter[]>([]);
   const mapTooltipRef = React.useRef<HTMLDivElement>(null);
 
   // Fetch ACTIVE + TRIAL users. The user_info table holds ~230k rows, but the
@@ -602,7 +634,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const availableAgeBuckets = useMemo(() => {
     const set = new Set<string>();
     users.forEach((u) => set.add(getAgeBucket(u.age)));
-    const order = ["Under 18", "18-24", "25-34", "35-44", "45-54", "55+", "Unknown"];
+    const order = ["Under 18", "18–22", "23–27", "28–32", "33–37", "38–42", "43–47", "48–52", "53–57", "58+", "Unknown"];
     return ["All", ...order.filter((b) => set.has(b))];
   }, [users]);
 
@@ -623,44 +655,6 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     users.forEach((u) => set.add(u.gender || "Unknown"));
     return ["All", ...Array.from(set).sort()];
   }, [users]);
-
-  // Everything EXCEPT the Active/Trial cohort toggle. The cohort segment at the
-  // top narrows this to a single payment_status; keeping this pre-status set
-  // separate lets each cohort's size show on the segment regardless of which
-  // one is currently selected.
-  const usersBeforeStatus = useMemo(() => {
-    return users.filter((u) => {
-      if (selectedCountry !== "All" && getCountryFromTimezone(u.time_zone) !== selectedCountry) return false;
-      if (selectedAttribution !== "All" && (u.attribution || "Unknown") !== selectedAttribution) return false;
-      if (selectedTutor !== "All" && (u.tutor || "Unknown") !== selectedTutor) return false;
-      if (selectedAgeBucket !== "All" && getAgeBucket(u.age) !== selectedAgeBucket) return false;
-      if (selectedDemandTier !== "All" && u.demand_tier !== selectedDemandTier) return false;
-      if (selectedLanguage !== "All" && (u.native_language || "Unknown") !== selectedLanguage) return false;
-      if (selectedGender !== "All" && (u.gender || "Unknown") !== selectedGender) return false;
-      return true;
-    });
-  }, [users, selectedCountry, selectedAttribution, selectedTutor, selectedAgeBucket, selectedDemandTier, selectedLanguage, selectedGender]);
-
-  // The cohort toggle scopes the ENTIRE dashboard (metrics, charts, table).
-  const filteredUsers = useMemo(
-    () =>
-      selectedStatus === "All"
-        ? usersBeforeStatus
-        : usersBeforeStatus.filter((u) => u.payment_status === selectedStatus),
-    [usersBeforeStatus, selectedStatus],
-  );
-
-  // Cohort sizes for the top segment control — respect every other active
-  // filter, but not the status toggle itself.
-  const cohortCounts = useMemo(
-    () => ({
-      all: usersBeforeStatus.length,
-      active: usersBeforeStatus.filter((u) => u.payment_status === "ACTIVE").length,
-      trial: usersBeforeStatus.filter((u) => u.payment_status === "TRIAL").length,
-      pastDue: usersBeforeStatus.filter((u) => u.payment_status === "PAST_DUE").length,
-    }),
-    [usersBeforeStatus],
-  );
 
   // ── First lesson completed map (user_id → earliest created_at) ──
   const firstLessonMap = useMemo(() => {
@@ -689,8 +683,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     return counts;
   }, [rawLessons]);
 
-  // ── Sorted users ──
-  const sortField = SORT_FIELDS.find((f) => f.key === sortBy) ?? SORT_FIELDS[0];
+  // Everything sort options and "+ Add filter" fields read besides the row.
   const sortCtx = useMemo<SortCtx>(
     () => ({
       firstLesson: firstLessonMap,
@@ -701,6 +694,79 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     }),
     [firstLessonMap, uniqueDaysMap, engagementMap, pastDueDateMap, revenueMap],
   );
+
+  const activeFieldFilters = useMemo(
+    () =>
+      fieldFilters.flatMap((flt) => {
+        const f = SORT_FIELDS.find((x) => x.key === flt.key);
+        return f ? [{ f, flt }] : [];
+      }),
+    [fieldFilters],
+  );
+
+  // Choices for each text field's "+ Add filter" dropdown: every value seen
+  // across the loaded users, most common first.
+  const fieldValueOptions = useMemo(() => {
+    const out = new Map<string, { value: string; count: number }[]>();
+    fieldFilters.forEach(({ key }) => {
+      const f = SORT_FIELDS.find((x) => x.key === key);
+      if (!f || f.type !== "text" || out.has(key)) return;
+      const counts = new Map<string, number>();
+      users.forEach((u) => {
+        const v = f.value(u, sortCtx);
+        if (v !== null) counts.set(String(v), (counts.get(String(v)) ?? 0) + 1);
+      });
+      out.set(key, [...counts.entries()].map(([value, count]) => ({ value, count })).sort((x, y) => y.count - x.count));
+    });
+    return out;
+  }, [fieldFilters, users, sortCtx]);
+
+  const updateFieldFilter = (i: number, patch: Partial<FieldFilter>) =>
+    setFieldFilters((prev) => prev.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+
+  // Everything EXCEPT the Active/Trial cohort toggle. The cohort segment at the
+  // top narrows this to a single payment_status; keeping this pre-status set
+  // separate lets each cohort's size show on the segment regardless of which
+  // one is currently selected.
+  const usersBeforeStatus = useMemo(() => {
+    return users.filter((u) => {
+      if (selectedCountry !== "All" && getCountryFromTimezone(u.time_zone) !== selectedCountry) return false;
+      if (selectedAttribution !== "All" && (u.attribution || "Unknown") !== selectedAttribution) return false;
+      if (selectedTutor !== "All" && (u.tutor || "Unknown") !== selectedTutor) return false;
+      if (selectedAgeBucket !== "All" && getAgeBucket(u.age) !== selectedAgeBucket) return false;
+      if (selectedDemandTier !== "All" && u.demand_tier !== selectedDemandTier) return false;
+      if (selectedLanguage !== "All" && (u.native_language || "Unknown") !== selectedLanguage) return false;
+      if (selectedGender !== "All" && (u.gender || "Unknown") !== selectedGender) return false;
+      for (const { f, flt } of activeFieldFilters) {
+        if (!matchesFieldFilter(f, flt, f.value(u, sortCtx))) return false;
+      }
+      return true;
+    });
+  }, [users, selectedCountry, selectedAttribution, selectedTutor, selectedAgeBucket, selectedDemandTier, selectedLanguage, selectedGender, activeFieldFilters, sortCtx]);
+
+  // The cohort toggle scopes the ENTIRE dashboard (metrics, charts, table).
+  const filteredUsers = useMemo(
+    () =>
+      selectedStatus === "All"
+        ? usersBeforeStatus
+        : usersBeforeStatus.filter((u) => u.payment_status === selectedStatus),
+    [usersBeforeStatus, selectedStatus],
+  );
+
+  // Cohort sizes for the top segment control — respect every other active
+  // filter, but not the status toggle itself.
+  const cohortCounts = useMemo(
+    () => ({
+      all: usersBeforeStatus.length,
+      active: usersBeforeStatus.filter((u) => u.payment_status === "ACTIVE").length,
+      trial: usersBeforeStatus.filter((u) => u.payment_status === "TRIAL").length,
+      pastDue: usersBeforeStatus.filter((u) => u.payment_status === "PAST_DUE").length,
+    }),
+    [usersBeforeStatus],
+  );
+
+  // ── Sorted users ──
+  const sortField = SORT_FIELDS.find((f) => f.key === sortBy) ?? SORT_FIELDS[0];
   const sortedUsers = useMemo(() => {
     const f = sortField;
     const dir = sortDesc ? -1 : 1;
@@ -1082,7 +1148,103 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
             </select>
           </div>
 
-          {(selectedCountry !== "All" || selectedAttribution !== "All" || selectedTutor !== "All" || selectedAgeBucket !== "All" || selectedDemandTier !== "All" || selectedLanguage !== "All" || selectedGender !== "All") && (
+          {fieldFilters.map((flt, i) => {
+            const f = SORT_FIELDS.find((x) => x.key === flt.key);
+            if (!f) return null;
+            const ranged = f.type === "number" || f.type === "usd" || f.type === "date";
+            const inputType = f.type === "date" ? "date" : "number";
+            return (
+              <div key={flt.key} className="filter-dropdown-group">
+                <label className="filter-label">
+                  {f.label}{" "}
+                  <button
+                    type="button"
+                    onClick={() => setFieldFilters((prev) => prev.filter((_, j) => j !== i))}
+                    title="Remove this filter"
+                    style={{ border: "none", background: "none", color: "#9ca3af", cursor: "pointer", padding: 0 }}
+                  >
+                    ✕
+                  </button>
+                </label>
+                <div style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+                  {ranged && flt.value === "" && (
+                    <>
+                      <input
+                        type={inputType}
+                        className="filter-select"
+                        style={{ width: f.type === "date" ? 140 : 80 }}
+                        placeholder="min"
+                        value={flt.min}
+                        onChange={(e) => updateFieldFilter(i, { min: e.target.value })}
+                        title={f.type === "date" ? "From (inclusive)" : "At least"}
+                      />
+                      <span style={{ color: "#9ca3af" }}>–</span>
+                      <input
+                        type={inputType}
+                        className="filter-select"
+                        style={{ width: f.type === "date" ? 140 : 80 }}
+                        placeholder="max"
+                        value={flt.max}
+                        onChange={(e) => updateFieldFilter(i, { max: e.target.value })}
+                        title={f.type === "date" ? "To (inclusive)" : "At most"}
+                      />
+                    </>
+                  )}
+                  <select
+                    className="filter-select"
+                    value={flt.value}
+                    onChange={(e) => updateFieldFilter(i, { value: e.target.value })}
+                  >
+                    <option value="">{ranged ? "Range" : "Any"}</option>
+                    <option value="__present">Has a value</option>
+                    <option value="__missing">Missing</option>
+                    {f.type === "bool" && (
+                      <>
+                        <option value="true">Yes</option>
+                        <option value="false">No</option>
+                      </>
+                    )}
+                    {(fieldValueOptions.get(f.key) ?? []).map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.value} ({o.count})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            );
+          })}
+
+          <div className="filter-dropdown-group">
+            <label htmlFor="add-filter" className="filter-label">More filters</label>
+            <select
+              id="add-filter"
+              className="filter-select"
+              value=""
+              onChange={(e) => {
+                const key = e.target.value;
+                if (key) setFieldFilters((prev) => [...prev, { key, value: "", min: "", max: "" }]);
+              }}
+            >
+              <option value="">+ Add filter</option>
+              {SORT_GROUPS.map((g) => (
+                <optgroup key={g} label={g}>
+                  {SORT_FIELDS.filter(
+                    (f) =>
+                      f.group === g &&
+                      !DEDICATED_FILTER_KEYS.has(f.key) &&
+                      !fieldFilters.some((x) => x.key === f.key),
+                  ).map((f) => (
+                    <option key={f.key} value={f.key}>
+                      {f.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+
+          {(selectedCountry !== "All" || selectedAttribution !== "All" || selectedTutor !== "All" || selectedAgeBucket !== "All" || selectedDemandTier !== "All" || selectedLanguage !== "All" || selectedGender !== "All" || fieldFilters.length > 0) && (
             <button
               className="filters-clear-btn"
               onClick={() => {
@@ -1095,6 +1257,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 setSelectedDemandTier("All");
                 setSelectedLanguage("All");
                 setSelectedGender("All");
+                setFieldFilters([]);
               }}
             >
               Clear All
