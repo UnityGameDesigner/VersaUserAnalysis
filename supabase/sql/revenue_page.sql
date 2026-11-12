@@ -84,26 +84,39 @@ language sql stable security definer set search_path = public as $$
   order by coalesce(m.gross, 0) desc;
 $$;
 
--- Identified users with any plan activity, highest gross first.
-create or replace function public.revenue_users(p_platform text default null, p_limit int default 500)
+-- Identified users with any plan activity, highest gross first. conv_* is
+-- where they converted (user_revenue): the paywall, the placement that showed
+-- it, and the campaign audience — named when superwall_audiences knows it.
+-- (Dropped first: adding columns changes the return type.)
+drop function if exists public.revenue_users(text, int);
+create function public.revenue_users(p_platform text default null, p_limit int default 500)
 returns table (
   user_id uuid, preferred_name text, payment_status text, platform text,
   trial_product_id text, first_paid_product_id text, current_product_id text, current_bucket text,
   payments int, gross numeric, net numeric, refunds numeric,
-  first_paid_at timestamptz, last_paid_at timestamptz
+  first_paid_at timestamptz, last_paid_at timestamptz,
+  conv_paywall_id int, conv_paywall_name text, conv_placement text, conv_experiment_id int,
+  conv_campaign_name text, conv_audience_name text, entitlement text
 )
 language sql stable security definer set search_path = public as $$
   select ur.user_id, ui.preferred_name, ui.payment_status, ur.platform,
          ur.trial_product_id, ur.first_paid_product_id, ur.current_product_id,
          plan_bucket(ur.current_period_months),
          ur.payments, ur.gross_usd, ur.net_usd, ur.refunds_usd,
-         ur.first_paid_at, ur.last_paid_at
+         ur.first_paid_at, ur.last_paid_at,
+         ur.conv_paywall_id, ur.conv_paywall_name, ur.conv_placement, ur.conv_experiment_id,
+         sa.campaign_name, sa.audience_name, sp.entitlement
   from user_revenue ur
   left join user_info ui on ui.user_id = ur.user_id
+  left join superwall_audiences sa on sa.experiment_id = ur.conv_experiment_id
+  left join subscription_products sp on sp.product_id = ur.current_product_id
   where p_platform is null or ur.platform = p_platform
   order by ur.gross_usd desc, ur.last_paid_at desc nulls last, ur.user_id  -- total order: the client pages this
   limit p_limit;
 $$;
+-- Names and live status: signed-in dashboard users only, not the anon key.
+revoke all on function public.revenue_users(text, int) from public, anon;
+grant execute on function public.revenue_users(text, int) to authenticated;
 
 -- Retention score per identified user (same population as revenue_users),
 -- 0-100, from their lessons since they subscribed (earliest of trial start,

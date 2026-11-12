@@ -27,8 +27,10 @@ create table if not exists public.subscription_products (
   period_count    int,
   period_months   numeric,               -- normalized length, for grouping (week = 0.25)
   list_price_usd  numeric(10,2),
-  trial_days      int
+  trial_days      int,
+  entitlement     text                   -- Superwall entitlement the product grants ('pro' | 'consumables')
 );
+alter table public.subscription_products add column if not exists entitlement text;
 
 create table if not exists public.subscription_transactions (
   transaction_id          text not null,
@@ -47,8 +49,22 @@ create table if not exists public.subscription_transactions (
   country                 text,
   purchased_at            timestamptz not null,
   source_integration      text,            -- which copy won the dedupe
+  -- Superwall's attribution of the purchase to the paywall presentation it came
+  -- from (null for the ~5% Superwall couldn't attribute). A renewal carries the
+  -- attribution of the subscription's original purchase.
+  paywall_id              int,
+  paywall_name            text,            -- name at the time of the latest purchase through it
+  placement               text,            -- the app event that showed the paywall
+  experiment_id           int,             -- the campaign audience (superwall_audiences.experiment_id)
+  variant_id              int,
   primary key (transaction_id, event)
 );
+alter table public.subscription_transactions
+  add column if not exists paywall_id int,
+  add column if not exists paywall_name text,
+  add column if not exists placement text,
+  add column if not exists experiment_id int,
+  add column if not exists variant_id int;
 
 create index if not exists subscription_transactions_user_idx
   on public.subscription_transactions (user_id, purchased_at);
@@ -79,7 +95,13 @@ select
   max(purchased_at) filter (where paid)                                                       as last_paid_at,
   coalesce(sum(price_usd) filter (where paid), 0)                                             as gross_usd,
   coalesce(sum(price_usd) filter (where event = 'refund'), 0)                                 as refunds_usd,
-  coalesce(sum(proceeds_usd) filter (where paid or event = 'refund'), 0)                      as net_usd
+  coalesce(sum(proceeds_usd) filter (where paid or event = 'refund'), 0)                      as net_usd,
+  -- Where the user converted: the attribution of their first attributed trial
+  -- start or payment.
+  (array_agg(paywall_id order by purchased_at) filter (where paywall_id is not null and event <> 'refund'))[1]     as conv_paywall_id,
+  (array_agg(paywall_name order by purchased_at) filter (where paywall_id is not null and event <> 'refund'))[1]   as conv_paywall_name,
+  (array_agg(placement order by purchased_at) filter (where paywall_id is not null and event <> 'refund'))[1]      as conv_placement,
+  (array_agg(experiment_id order by purchased_at) filter (where paywall_id is not null and event <> 'refund'))[1]  as conv_experiment_id
 from t
 group by user_id;
 

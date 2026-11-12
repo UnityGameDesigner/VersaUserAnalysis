@@ -94,7 +94,23 @@ interface UserRevenue {
   current_bucket: string;
   first_paid_product_id: string | null;
   trial_product_id: string | null;
+  // Where they converted — Superwall's attribution of their first attributed
+  // trial start or payment. All null when Superwall couldn't attribute it (~5%).
+  conv_paywall_id: number | null;
+  conv_paywall_name: string | null;
+  conv_placement: string | null; // the app event that showed the paywall
+  conv_experiment_id: number | null; // the campaign audience
+  // Null when the audience has since been deleted from its campaign (Superwall
+  // can't list those), even though conv_experiment_id is set.
+  conv_campaign_name: string | null;
+  conv_audience_name: string | null;
+  entitlement: string | null; // what the current plan grants
 }
+
+const paywallLabel = (r: UserRevenue | undefined) =>
+  r?.conv_paywall_id == null ? null : r.conv_paywall_name || `Paywall #${r.conv_paywall_id}`;
+const audienceLabel = (r: UserRevenue | undefined) =>
+  r?.conv_experiment_id == null ? null : r.conv_audience_name || `Audience #${r.conv_experiment_id}`;
 
 // user_id → retention score (revenue_user_retention RPC): 0-100 from lessons
 // since subscribing; active days dominate, measured against a target that grows
@@ -248,6 +264,11 @@ const SORT_FIELDS: SortField[] = [
   { key: "gross", label: "Revenue (gross)", group: "Subscription & revenue", type: "usd", desc: true, column: true, value: (u, c) => c.revenue.get(u.user_id)?.gross_usd ?? null },
   { key: "net", label: "Revenue (net)", group: "Subscription & revenue", type: "usd", desc: true, column: true, value: (u, c) => c.revenue.get(u.user_id)?.net_usd ?? null },
   { key: "refunds", label: "Refunded", group: "Subscription & revenue", type: "usd", desc: true, value: (u, c) => { const r = c.revenue.get(u.user_id); return r ? -r.refunds_usd : null; } },
+  { key: "paywall", label: "Converted on paywall", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => paywallLabel(c.revenue.get(u.user_id)) },
+  { key: "placement", label: "Paywall placement", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => c.revenue.get(u.user_id)?.conv_placement ?? null },
+  { key: "campaign", label: "Campaign", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => c.revenue.get(u.user_id)?.conv_campaign_name ?? null },
+  { key: "audience", label: "Campaign audience", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => audienceLabel(c.revenue.get(u.user_id)) },
+  { key: "entitlement", label: "Entitlement", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => c.revenue.get(u.user_id)?.entitlement ?? null },
   {
     key: "retention", label: "Retention score", group: "Subscription & revenue", type: "number", desc: true, column: true,
     value: (u, c) => (c.retention && c.revenue.has(u.user_id) ? c.retention.get(u.user_id)?.score ?? 0 : null),
@@ -658,6 +679,13 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
               current_bucket: String(r.current_bucket ?? ""),
               first_paid_product_id: (r.first_paid_product_id as string) ?? null,
               trial_product_id: (r.trial_product_id as string) ?? null,
+              conv_paywall_id: r.conv_paywall_id == null ? null : Number(r.conv_paywall_id),
+              conv_paywall_name: (r.conv_paywall_name as string) ?? null,
+              conv_placement: (r.conv_placement as string) ?? null,
+              conv_experiment_id: r.conv_experiment_id == null ? null : Number(r.conv_experiment_id),
+              conv_campaign_name: (r.conv_campaign_name as string) ?? null,
+              conv_audience_name: (r.conv_audience_name as string) ?? null,
+              entitlement: (r.entitlement as string) ?? null,
             },
           ]),
         ),
@@ -1257,6 +1285,38 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           {rev.trial_product_id && <div style={sub}>trial: {planName(rev.trial_product_id)}</div>}
         </div>
       )),
+    },
+    {
+      key: "paywall", sortKey: "paywall", label: "Paywall",
+      title: "The paywall they converted on — Superwall's attribution of their first trial start or payment — with the placement (app event) that showed it below. Blank for the ~5% of purchases Superwall couldn't attribute.",
+      cell: revCell((rev) =>
+        rev.conv_paywall_id == null ? (
+          muted
+        ) : (
+          <div title={`Paywall #${rev.conv_paywall_id}`}>
+            {paywallLabel(rev)}
+            {rev.conv_placement && <div style={sub}>{rev.conv_placement}</div>}
+          </div>
+        ),
+      ),
+    },
+    {
+      key: "campaign", sortKey: "campaign", label: "Campaign",
+      title: "The Superwall campaign and audience that served that paywall. Audiences that have since been deleted from their campaign show only their id — Superwall no longer lists their name or campaign.",
+      cell: revCell((rev) =>
+        rev.conv_experiment_id == null ? (
+          muted
+        ) : (
+          <div title={`Audience #${rev.conv_experiment_id}`}>
+            {rev.conv_campaign_name ?? <span className="eng-muted">Unknown</span>}
+            <div style={sub}>{rev.conv_audience_name ?? `audience #${rev.conv_experiment_id}${rev.conv_campaign_name ? "" : " (deleted)"}`}</div>
+          </div>
+        ),
+      ),
+    },
+    {
+      key: "entitlement", sortKey: "entitlement", label: "Entitlement", title: "The Superwall entitlement their current plan grants",
+      cell: revCell((rev) => rev.entitlement ?? muted),
     },
     { key: "payments", sortKey: "payments", label: "Payments", title: "Paid charges since Mar 1, 2026", cell: revCell((rev) => rev.payments) },
     { key: "gross", sortKey: "gross", label: "Gross", title: "Price paid in USD since Mar 1, 2026", cell: revCell((rev) => usd(rev.gross_usd, 2)) },
