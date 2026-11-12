@@ -1,4 +1,4 @@
--- RPCs behind the Revenue tab (src/Revenue.tsx). Read from the tables in
+-- RPCs behind the dashboard's Revenue section and user-table revenue columns (src/Revenue.tsx, src/ActiveUserDashboard.tsx). Read from the tables in
 -- subscription_revenue.sql (backfilled from Superwall, purchases since 2026-03-01).
 --
 -- p_platform: 'ios' | 'android' | null (both).

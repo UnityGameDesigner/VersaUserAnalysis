@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { supabase } from "./lib/supabase";
 import { BUCKETS, BUCKET_COLORS, num, usd, planName, statusVariant, fmtDate } from "./lib/revenueFormat";
 
-// "Lapsed users" view of the Revenue tab — identified users whose paid
+// "Lapsed users" view of the dashboard's Revenue section — identified users whose paid
 // subscription ended without a renewal, filterable by plan length and by the
 // exact store plan. Reads the revenue_lapsed_users RPC
 // (supabase/sql/revenue_page.sql), which judges lapses as of the newest

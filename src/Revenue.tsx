@@ -15,16 +15,18 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { format } from "date-fns";
-import { BUCKETS, BUCKET_COLORS, num, usd, planName, statusVariant, fmtDate } from "./lib/revenueFormat";
+import { BUCKETS, BUCKET_COLORS, num, usd, planName } from "./lib/revenueFormat";
 import LapsedUsers from "./LapsedUsers";
 import PlanRetention from "./PlanRetention";
 
-// "Revenue" — which plan each user is on and how much they have paid. Reads the
-// subscription_transactions / subscription_products tables (backfilled from
-// Superwall ClickHouse, purchases since 2026-03-01, store-vs-RevenueCat
-// duplicates removed by transactionId) through the revenue_monthly,
-// revenue_by_plan, revenue_users, revenue_user_retention and revenue_subscribers_daily
-// RPCs (supabase/sql/revenue_page.sql).
+// The Revenue section of the main dashboard (src/ActiveUserDashboard.tsx) —
+// what each plan brought in. Reads the subscription_transactions /
+// subscription_products tables (backfilled from Superwall ClickHouse, purchases
+// since 2026-03-01, store-vs-RevenueCat duplicates removed by transactionId)
+// through the revenue_monthly, revenue_by_plan, revenue_users and
+// revenue_subscribers_daily RPCs (supabase/sql/revenue_page.sql). The per-user
+// figures (plan, spend, retention score) are columns of the dashboard's user
+// table, not shown here.
 
 type Platform = "all" | "ios" | "android";
 type Money = "gross" | "net";
@@ -55,31 +57,10 @@ interface PlanRow {
   refunds: number;
 }
 
+// Only what the payer KPIs need; the rest of revenue_users feeds the dashboard's user table.
 interface UserRow {
-  user_id: string;
-  preferred_name: string | null;
-  payment_status: string | null;
-  platform: string;
-  trial_product_id: string | null;
-  first_paid_product_id: string | null;
-  current_product_id: string | null;
-  current_bucket: string;
   payments: number;
   gross: number;
-  net: number;
-  refunds: number;
-  first_paid_at: string | null;
-  last_paid_at: string | null;
-  // 0-100 from lessons since subscribing; active days dominate, measured against
-  // a target that grows with time subscribed (see revenue_user_retention).
-  retention: number;
-  tenure_days: number | null;
-  target_days: number | null;
-  active_days: number;
-  lessons: number;
-  avg_lesson_min: number | null;
-  completion_rate: number | null;
-  last_lesson_at: string | null;
 }
 
 interface SubDayRow {
@@ -100,14 +81,6 @@ function pct(n: number, d: number): string {
 }
 
 type PlanSort = "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals";
-type UserSort = "gross" | "net" | "payments" | "last_paid_at" | "retention";
-
-// ~7 active days lands a user near 50, 30+ near 80+.
-function retentionColor(score: number): string {
-  if (score >= 70) return "#1baf7a";
-  if (score >= 40) return "#eda100";
-  return "#eb6834";
-}
 
 const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserClick }) => {
   const [platform, setPlatform] = useState<Platform>("all");
@@ -119,9 +92,6 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [planSort, setPlanSort] = useState<PlanSort>("gross");
-  const [userSort, setUserSort] = useState<UserSort>("gross");
-  const [search, setSearch] = useState("");
-  const [payersOnly, setPayersOnly] = useState(true);
   const [subDays, setSubDays] = useState<SubDayRow[]>([]);
   const [subRange, setSubRange] = useState<SubRange>(90);
 
@@ -143,18 +113,13 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         }
       };
       // Any rpc() error must surface — an error read as "empty" looks like "no revenue".
-      const [m, p, u, sd, ret] = await Promise.all([
+      const [m, p, u, sd] = await Promise.all([
         supabase.rpc("revenue_monthly", { p_platform }),
         supabase.rpc("revenue_by_plan", { p_platform }),
         fetchUsers(),
         supabase.rpc("revenue_subscribers_daily", { p_platform }),
-        // One json array, not rows, so it isn't paged by the 1,000-row cap.
-        supabase.rpc("revenue_user_retention", { p_platform }),
       ]);
-      for (const r of [m, p, u, sd, ret]) if (r.error) throw new Error(r.error.message);
-      const retention = new Map<string, Record<string, unknown>>(
-        ((ret.data ?? []) as Record<string, unknown>[]).map((r) => [String(r.user_id), r]),
-      );
+      for (const r of [m, p, u, sd]) if (r.error) throw new Error(r.error.message);
       setSubDays(
         (sd.data ?? []).map((r: Record<string, unknown>) => ({
           day: String(r.day),
@@ -192,33 +157,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         })),
       );
       setUsers(
-        (u.data ?? []).map((r: Record<string, unknown>) => {
-          const e = retention.get(String(r.user_id));
-          return {
-            user_id: String(r.user_id),
-            preferred_name: (r.preferred_name as string) ?? null,
-            payment_status: (r.payment_status as string) ?? null,
-            platform: String(r.platform),
-            trial_product_id: (r.trial_product_id as string) ?? null,
-            first_paid_product_id: (r.first_paid_product_id as string) ?? null,
-            current_product_id: (r.current_product_id as string) ?? null,
-            current_bucket: String(r.current_bucket ?? ""),
-            payments: num(r.payments),
-            gross: num(r.gross),
-            net: num(r.net),
-            refunds: num(r.refunds),
-            first_paid_at: (r.first_paid_at as string) ?? null,
-            last_paid_at: (r.last_paid_at as string) ?? null,
-            retention: num(e?.score),
-            tenure_days: e?.tenure_days == null ? null : Number(e.tenure_days),
-            target_days: e?.target_days == null ? null : Number(e.target_days),
-            active_days: num(e?.active_days),
-            lessons: num(e?.lessons),
-            avg_lesson_min: e?.avg_lesson_min == null ? null : Number(e.avg_lesson_min),
-            completion_rate: e?.completion_rate == null ? null : Number(e.completion_rate),
-            last_lesson_at: (e?.last_lesson_at as string) ?? null,
-          };
-        }),
+        (u.data ?? []).map((r: Record<string, unknown>) => ({ payments: num(r.payments), gross: num(r.gross) })),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -303,18 +242,6 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
     return [...plans].sort((a, b) => key(b) - key(a));
   }, [plans, planSort]);
 
-  const shownUsers = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const rows = users.filter(
-      (u) =>
-        (!payersOnly || u.payments > 0) &&
-        (!q || u.user_id.toLowerCase().includes(q) || (u.preferred_name ?? "").toLowerCase().includes(q)),
-    );
-    const key = (u: UserRow) =>
-      userSort === "last_paid_at" ? (u.last_paid_at ? Date.parse(u.last_paid_at) : 0) : u[userSort];
-    return rows.sort((a, b) => key(b) - key(a)).slice(0, 300);
-  }, [users, search, payersOnly, userSort]);
-
   const sortTh = (active: boolean): React.CSSProperties => ({
     cursor: "pointer",
     whiteSpace: "nowrap",
@@ -322,7 +249,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
   });
 
   return (
-    <div className="lessons-detail" style={{ padding: "1.5rem" }}>
+    <section className="lessons-detail" style={{ margin: "1.5rem 0" }}>
       <h2 className="lessons-detail-title" style={{ margin: 0 }}>
         Revenue
         {!loading && (
@@ -332,9 +259,11 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         )}
       </h2>
       <p className="ret-chart-sub" style={{ marginTop: "0.4rem", maxWidth: "80ch" }}>
-        Which plan users are on and what they paid, from Superwall's store transactions since{" "}
-        <strong>Mar 1, 2026</strong> (App Store / Google Play, with RevenueCat duplicates removed). Gross is the
-        price in USD; net is what we keep after the store's commission and tax. Refunds subtract from net.
+        What each plan brought in, from Superwall's store transactions since <strong>Mar 1, 2026</strong> (App
+        Store / Google Play, with RevenueCat duplicates removed). Gross is the price in USD; net is what we keep
+        after the store's commission and tax. Refunds subtract from net. This section covers every transaction,
+        so the segment and filters above don't narrow it — only the platform switch here does. Each user's plan
+        and spend are in the Users table below.
       </p>
 
       <div className="tab-bar" style={{ marginTop: "1rem" }}>
@@ -707,152 +636,6 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
             </div>
           </div>
 
-          <div className="chart-container" style={{ marginTop: "1.25rem" }}>
-            <div className="ret-chart-head">
-              <h3>Users</h3>
-            </div>
-            <p className="ret-chart-sub">
-              Each identified user's plans and lifetime spend since Mar 1. Click a row to open them in User Lookup.
-            </p>
-            <div style={{ display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap", marginTop: "0.5rem" }}>
-              <input
-                className="tx-search-input"
-                placeholder="Search name or user id…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                style={{ maxWidth: 320 }}
-              />
-              <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
-                <input type="checkbox" checked={payersOnly} onChange={(e) => setPayersOnly(e.target.checked)} />
-                Paying users only (hide trial-only)
-              </label>
-            </div>
-            {shownUsers.length === 0 ? (
-              <div className="empty-state" style={{ padding: "2rem" }}>
-                No users match.
-              </div>
-            ) : (
-              <div className="table-container" style={{ marginTop: "0.75rem" }}>
-                <table className="data-table">
-                  <thead className="table-head">
-                    <tr>
-                      <th>Name</th>
-                      <th>Status</th>
-                      <th title="Most recent plan the user trialed or paid for">Current plan</th>
-                      <th title="First plan they paid for, and the plan their trial was on">First paid plan</th>
-                      <th style={sortTh(userSort === "payments")} onClick={() => setUserSort("payments")}>
-                        Payments
-                      </th>
-                      <th style={sortTh(userSort === "gross")} onClick={() => setUserSort("gross")}>
-                        Gross
-                      </th>
-                      <th style={sortTh(userSort === "net")} onClick={() => setUserSort("net")}>
-                        Net
-                      </th>
-                      <th style={sortTh(userSort === "last_paid_at")} onClick={() => setUserSort("last_paid_at")}>
-                        Last paid
-                      </th>
-                      <th
-                        style={sortTh(userSort === "retention")}
-                        onClick={() => setUserSort("retention")}
-                        title="0–100, from lessons since subscribing. Active days (60 pts, full at 1 active day per 3 days subscribed, capped at 30 — so new subscribers aren't marked down) + avg lesson length (15, full at 10 min) + share of lessons finished (15) + recency (10, full within 7 days, 0 after 30). Onboarding and silent lessons don't count."
-                      >
-                        Retention
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="table-body">
-                    {shownUsers.map((u) => {
-                      const profileUrl = `${window.location.pathname}${window.location.search}#user-lookup:${u.user_id}`;
-                      return (
-                        <tr
-                          key={u.user_id}
-                          className={onUserClick ? "table-row--clickable" : ""}
-                          onClick={(e) => {
-                            if (e.metaKey || e.ctrlKey) {
-                              window.open(profileUrl, "_blank");
-                              return;
-                            }
-                            onUserClick?.(u.user_id);
-                          }}
-                          onAuxClick={(e) => {
-                            if (e.button === 1) {
-                              e.preventDefault();
-                              window.open(profileUrl, "_blank");
-                            }
-                          }}
-                        >
-                          <td>
-                            {u.preferred_name || u.user_id.slice(0, 8) + "…"}
-                            <div style={{ fontSize: 11, color: "#6b7280" }}>
-                              {u.platform === "ios" ? "iOS" : "Android"}
-                            </div>
-                          </td>
-                          <td>
-                            {u.payment_status ? (
-                              <span className={`plan-pill plan-pill--${statusVariant(u.payment_status)}`}>
-                                {u.payment_status}
-                              </span>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td title={u.current_product_id ?? ""}>
-                            {u.current_bucket}
-                            <div style={{ fontSize: 11, color: "#6b7280" }}>{planName(u.current_product_id)}</div>
-                          </td>
-                          <td title={u.first_paid_product_id ?? ""}>
-                            {planName(u.first_paid_product_id)}
-                            {u.trial_product_id && (
-                              <div style={{ fontSize: 11, color: "#6b7280" }}>
-                                trial: {planName(u.trial_product_id)}
-                              </div>
-                            )}
-                          </td>
-                          <td>{u.payments}</td>
-                          <td>{usd(u.gross, 2)}</td>
-                          <td>{usd(u.net, 2)}</td>
-                          <td style={{ whiteSpace: "nowrap" }}>{fmtDate(u.last_paid_at)}</td>
-                          <td
-                            style={{ whiteSpace: "nowrap" }}
-                            title={
-                              u.lessons
-                                ? `${u.active_days} of ${u.target_days} target active days ` +
-                                  `(subscribed ${u.tenure_days} days) · ${u.lessons} lessons · ` +
-                                  `avg ${u.avg_lesson_min ?? "—"} min · ` +
-                                  `${u.completion_rate == null ? "—" : Math.round(u.completion_rate * 100) + "%"} finished · ` +
-                                  `last lesson ${fmtDate(u.last_lesson_at)}`
-                                : "No lessons with the user speaking since subscribing"
-                            }
-                          >
-                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <strong style={{ minWidth: 22 }}>{u.retention}</strong>
-                              <div style={{ width: 48, height: 6, borderRadius: 3, background: "#e5e7eb" }}>
-                                <div
-                                  style={{
-                                    width: `${u.retention}%`,
-                                    height: "100%",
-                                    borderRadius: 3,
-                                    background: retentionColor(u.retention),
-                                  }}
-                                />
-                              </div>
-                            </div>
-                            <div style={{ fontSize: 11, color: "#6b7280" }}>
-                              {u.lessons
-                                ? `${u.active_days}/${u.target_days} days · ${u.tenure_days}d subscribed`
-                                : "no lessons"}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
           <p className="ret-chart-sub" style={{ marginTop: "0.75rem", maxWidth: "80ch" }}>
             <strong>Coverage:</strong> totals include every store transaction, but only ~65% carry a Supabase user
             id — the rest were bought while Superwall <code>identify()</code> wasn't running (mostly Mar–Jun 2026),
@@ -861,7 +644,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           </p>
         </>
       )}
-    </div>
+    </section>
   );
 };
 

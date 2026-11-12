@@ -3,6 +3,8 @@ import "./App.css";
 import { supabase } from "./lib/supabase";
 import { getCountryFromTimezone } from "./lib/timezone";
 import { speakingAbility } from "./lib/onboardingAssessment";
+import { num, usd, planName, fmtDate } from "./lib/revenueFormat";
+import Revenue from "./Revenue";
 import {
   BarChart,
   Bar,
@@ -79,15 +81,44 @@ interface ActiveUser {
   previous_experience: string | null;
 }
 
-// user_id → user_revenue figures (dashboard_user_revenue RPC).
+// user_id → plan and spend since Mar 1, 2026 (revenue_users RPC). Users with no
+// store transaction linked to them have no entry.
 interface UserRevenue {
   payments: number;
   gross_usd: number;
   net_usd: number;
+  refunds_usd: number;
   first_paid_at: string | null;
   last_paid_at: string | null;
   current_product_id: string | null;
+  current_bucket: string;
+  first_paid_product_id: string | null;
+  trial_product_id: string | null;
 }
+
+// user_id → retention score (revenue_user_retention RPC): 0-100 from lessons
+// since subscribing; active days dominate, measured against a target that grows
+// with time subscribed. Users with revenue but no entry had no lessons (score 0).
+interface UserRetention {
+  score: number;
+  tenure_days: number | null;
+  target_days: number | null;
+  active_days: number;
+  lessons: number;
+  avg_lesson_min: number | null;
+  completion_rate: number | null;
+  last_lesson_at: string | null;
+}
+
+// ~7 active days lands a user near 50, 30+ near 80+.
+function retentionColor(score: number): string {
+  if (score >= 70) return "#1baf7a";
+  if (score >= 40) return "#eda100";
+  return "#eb6834";
+}
+
+const RETENTION_HELP =
+  "0–100, from lessons since subscribing. Active days (60 pts, full at 1 active day per 3 days subscribed, capped at 30 — so new subscribers aren't marked down) + avg lesson length (15, full at 10 min) + share of lessons finished (15) + recency (10, full within 7 days, 0 after 30). Onboarding and silent lessons don't count.";
 
 // Everything a sort option can read besides the user row itself.
 interface SortCtx {
@@ -96,6 +127,7 @@ interface SortCtx {
   engagement: Map<string, { lessons: number; turns: number; days: number }> | null;
   pastDue: Map<string, string>;
   revenue: Map<string, UserRevenue>;
+  retention: Map<string, UserRetention> | null;
 }
 
 type SortValue = string | number | boolean | null;
@@ -206,12 +238,20 @@ const SORT_FIELDS: SortField[] = [
   },
   { key: "billingIssue", label: "Billing issue", group: "Subscription & revenue", type: "date", desc: true, value: (u, c) => time(c.pastDue.get(u.user_id)) },
   { key: "accessExpires", label: "Access expires", group: "Subscription & revenue", type: "date", desc: false, value: (u) => time(u.access_expires_at) },
-  { key: "plan", label: "Current plan", group: "Subscription & revenue", type: "text", desc: false, value: (u, c) => c.revenue.get(u.user_id)?.current_product_id ?? null },
+  { key: "plan", label: "Current plan", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => c.revenue.get(u.user_id)?.current_product_id ?? null },
+  { key: "planLength", label: "Current plan length", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => c.revenue.get(u.user_id)?.current_bucket || null },
+  { key: "firstPaidPlan", label: "First paid plan", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => c.revenue.get(u.user_id)?.first_paid_product_id ?? null },
+  { key: "trialPlan", label: "Trial plan", group: "Subscription & revenue", type: "text", desc: false, column: true, value: (u, c) => c.revenue.get(u.user_id)?.trial_product_id ?? null },
   { key: "firstPaid", label: "First payment", group: "Subscription & revenue", type: "date", desc: true, value: (u, c) => time(c.revenue.get(u.user_id)?.first_paid_at) },
-  { key: "lastPaid", label: "Latest payment", group: "Subscription & revenue", type: "date", desc: true, value: (u, c) => time(c.revenue.get(u.user_id)?.last_paid_at) },
-  { key: "payments", label: "Payments", group: "Subscription & revenue", type: "number", desc: true, value: (u, c) => c.revenue.get(u.user_id)?.payments ?? null },
-  { key: "gross", label: "Revenue (gross)", group: "Subscription & revenue", type: "usd", desc: true, value: (u, c) => c.revenue.get(u.user_id)?.gross_usd ?? null },
-  { key: "net", label: "Revenue (net)", group: "Subscription & revenue", type: "usd", desc: true, value: (u, c) => c.revenue.get(u.user_id)?.net_usd ?? null },
+  { key: "lastPaid", label: "Latest payment", group: "Subscription & revenue", type: "date", desc: true, column: true, value: (u, c) => time(c.revenue.get(u.user_id)?.last_paid_at) },
+  { key: "payments", label: "Payments", group: "Subscription & revenue", type: "number", desc: true, column: true, value: (u, c) => c.revenue.get(u.user_id)?.payments ?? null },
+  { key: "gross", label: "Revenue (gross)", group: "Subscription & revenue", type: "usd", desc: true, column: true, value: (u, c) => c.revenue.get(u.user_id)?.gross_usd ?? null },
+  { key: "net", label: "Revenue (net)", group: "Subscription & revenue", type: "usd", desc: true, column: true, value: (u, c) => c.revenue.get(u.user_id)?.net_usd ?? null },
+  { key: "refunds", label: "Refunded", group: "Subscription & revenue", type: "usd", desc: true, value: (u, c) => { const r = c.revenue.get(u.user_id); return r ? -r.refunds_usd : null; } },
+  {
+    key: "retention", label: "Retention score", group: "Subscription & revenue", type: "number", desc: true, column: true,
+    value: (u, c) => (c.retention && c.revenue.has(u.user_id) ? c.retention.get(u.user_id)?.score ?? 0 : null),
+  },
 ];
 const SORT_GROUPS = Array.from(new Set(SORT_FIELDS.map((f) => f.group)));
 
@@ -337,8 +377,13 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   // defensively: if the column isn't migrated in yet the dashboard still works
   // and the Billing Issue column just shows "—".
   const [pastDueDateMap, setPastDueDateMap] = useState<Map<string, string>>(new Map());
-  // user_id → revenue, for the revenue sort options. Empty if the RPC fails.
+  // user_id → plan and spend, for the table's revenue columns. Empty until
+  // loaded, or if the RPC fails (revenueError set).
   const [revenueMap, setRevenueMap] = useState<Map<string, UserRevenue>>(new Map());
+  const [revenueError, setRevenueError] = useState<string | null>(null);
+  // user_id → retention score. null until it resolves (it reads transcripts, ~3s).
+  const [retentionMap, setRetentionMap] = useState<Map<string, UserRetention> | null>(null);
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState<boolean>(true);
 
   // Measure container width for grid layout
@@ -534,22 +579,6 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
           setEngagementMap(map);
         }
 
-        // Revenue per user for the revenue sorts. Non-fatal — those sorts just
-        // put everyone in "missing" if it fails.
-        const { data: revRows, error: revErr } = await supabase.rpc("dashboard_user_revenue");
-        if (revErr) {
-          console.warn("dashboard_user_revenue unavailable — revenue sorts will be empty:", revErr.message);
-        } else {
-          setRevenueMap(
-            new Map(
-              ((revRows as (UserRevenue & { user_id: string })[] | null) ?? []).map((r) => [
-                r.user_id,
-                { ...r, payments: Number(r.payments), gross_usd: Number(r.gross_usd), net_usd: Number(r.net_usd) },
-              ]),
-            ),
-          );
-        }
-
         // Billing-issue dates for past-due users. Separate + defensive so a
         // not-yet-migrated became_past_due_at column can't break the main fetch.
         const { data: pdRows, error: pdErr } = await supabase
@@ -580,6 +609,76 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     };
 
     fetchUsers();
+  }, []);
+
+  // Plan, spend and retention per user for the table's revenue columns. Loaded
+  // apart from the main fetch so the slow retention score doesn't hold up the page.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // PostgREST caps a response at 1,000 rows, so page the user list.
+      const rows: Record<string, unknown>[] = [];
+      for (let from = 0; ; from += 1000) {
+        const r = await supabase.rpc("revenue_users", { p_platform: null, p_limit: 20000 }).range(from, from + 999);
+        if (cancelled) return;
+        if (r.error) {
+          // Must surface — an error read as "empty" looks like "nobody paid".
+          setRevenueError(r.error.message);
+          return;
+        }
+        rows.push(...((r.data ?? []) as Record<string, unknown>[]));
+        if ((r.data ?? []).length < 1000) break;
+      }
+      setRevenueMap(
+        new Map(
+          rows.map((r) => [
+            String(r.user_id),
+            {
+              payments: num(r.payments),
+              gross_usd: num(r.gross),
+              net_usd: num(r.net),
+              refunds_usd: num(r.refunds),
+              first_paid_at: (r.first_paid_at as string) ?? null,
+              last_paid_at: (r.last_paid_at as string) ?? null,
+              current_product_id: (r.current_product_id as string) ?? null,
+              current_bucket: String(r.current_bucket ?? ""),
+              first_paid_product_id: (r.first_paid_product_id as string) ?? null,
+              trial_product_id: (r.trial_product_id as string) ?? null,
+            },
+          ]),
+        ),
+      );
+    })();
+    (async () => {
+      // One json array, not rows, so it isn't paged by the 1,000-row cap.
+      const r = await supabase.rpc("revenue_user_retention", { p_platform: null });
+      if (cancelled) return;
+      if (r.error) {
+        setRevenueError(r.error.message);
+        setRetentionMap(new Map());
+        return;
+      }
+      setRetentionMap(
+        new Map(
+          ((r.data ?? []) as Record<string, unknown>[]).map((e) => [
+            String(e.user_id),
+            {
+              score: num(e.score),
+              tenure_days: e.tenure_days == null ? null : Number(e.tenure_days),
+              target_days: e.target_days == null ? null : Number(e.target_days),
+              active_days: num(e.active_days),
+              lessons: num(e.lessons),
+              avg_lesson_min: e.avg_lesson_min == null ? null : Number(e.avg_lesson_min),
+              completion_rate: e.completion_rate == null ? null : Number(e.completion_rate),
+              last_lesson_at: (e.last_lesson_at as string) ?? null,
+            },
+          ]),
+        ),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // ── Helpers ──────────────────────────────────────
@@ -691,8 +790,9 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       engagement: engagementMap,
       pastDue: pastDueDateMap,
       revenue: revenueMap,
+      retention: retentionMap,
     }),
-    [firstLessonMap, uniqueDaysMap, engagementMap, pastDueDateMap, revenueMap],
+    [firstLessonMap, uniqueDaysMap, engagementMap, pastDueDateMap, revenueMap, retentionMap],
   );
 
   const activeFieldFilters = useMemo(
@@ -770,8 +870,15 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
   const sortedUsers = useMemo(() => {
     const f = sortField;
     const dir = sortDesc ? -1 : 1;
-    const vals = new Map(filteredUsers.map((u) => [u.user_id, f.value(u, sortCtx)]));
-    return [...filteredUsers].sort((a, b) => {
+    // The search box narrows the table only, not the metrics and charts above.
+    const q = search.trim().toLowerCase();
+    const rows = q
+      ? filteredUsers.filter(
+          (u) => u.user_id.toLowerCase().includes(q) || (u.preferred_name ?? "").toLowerCase().includes(q),
+        )
+      : filteredUsers;
+    const vals = new Map(rows.map((u) => [u.user_id, f.value(u, sortCtx)]));
+    return [...rows].sort((a, b) => {
       if (f.compare) return dir * f.compare(a, b, sortCtx);
       const av = vals.get(a.user_id) ?? null;
       const bv = vals.get(b.user_id) ?? null;
@@ -780,7 +887,7 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       if (typeof av === "string" && typeof bv === "string") return dir * av.localeCompare(bv);
       return dir * (Number(av) - Number(bv));
     });
-  }, [filteredUsers, sortField, sortDesc, sortCtx]);
+  }, [filteredUsers, sortField, sortDesc, sortCtx, search]);
 
   // ── Computed Data (all based on filteredUsers) ────
   const activeCount = useMemo(
@@ -1549,12 +1656,23 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
         </RGL>
         </div>
 
+        {/* Revenue — charts and plan tables (the per-user figures are columns
+            of the user table below). */}
+        <Revenue onUserClick={onUserClick} />
+
         {/* User Table */}
         <main className="dashboard-main">
           <div className="controls-bar" style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
             <h2 className="results-heading" style={{ margin: 0 }}>
-              Users ({filteredUsers.length} total)
+              Users ({search.trim() ? `${sortedUsers.length} of ${filteredUsers.length}` : `${filteredUsers.length} total`})
             </h2>
+            <input
+              className="filter-select"
+              placeholder="Search name or user id…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ width: 220 }}
+            />
             <label className="filter-label" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
               Sort by:
               <select
@@ -1599,6 +1717,11 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 Engagement unavailable — run supabase/sql/engagement_by_user.sql
               </span>
             )}
+            {revenueError && (
+              <span className="eng-warning" title={revenueError}>
+                Plan / revenue columns failed to load
+              </span>
+            )}
           </div>
 
           <div className="user-list-container">
@@ -1629,6 +1752,13 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                       >
                         Engagement
                       </th>
+                      <th title="Most recent plan the user trialed or paid for">Current Plan</th>
+                      <th title="First plan they paid for, and the plan their trial was on">First Paid Plan</th>
+                      <th title="Paid charges since Mar 1, 2026">Payments</th>
+                      <th title="Price paid in USD since Mar 1, 2026">Gross</th>
+                      <th title="What we keep after the store's commission, tax and refunds">Net</th>
+                      <th>Last Paid</th>
+                      <th title={RETENTION_HELP}>Retention</th>
                       {!sortField.column && !(sortField.key === "billingIssue" && selectedStatus === "PAST_DUE") && (
                         <th title="The field the table is sorted by">{sortField.label}</th>
                       )}
@@ -1734,6 +1864,75 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                             );
                           })()}
                         </td>
+                        {(() => {
+                          const rev = revenueMap.get(user.user_id);
+                          const muted = <span className="eng-muted">—</span>;
+                          if (!rev) {
+                            return (
+                              <>
+                                <td>{muted}</td><td>{muted}</td><td>{muted}</td><td>{muted}</td>
+                                <td>{muted}</td><td>{muted}</td><td>{muted}</td>
+                              </>
+                            );
+                          }
+                          const ret = retentionMap?.get(user.user_id);
+                          const score = ret?.score ?? 0;
+                          return (
+                            <>
+                              <td title={rev.current_product_id ?? ""}>
+                                {rev.current_bucket || "—"}
+                                <div style={{ fontSize: 11, color: "#6b7280" }}>{planName(rev.current_product_id)}</div>
+                              </td>
+                              <td title={rev.first_paid_product_id ?? ""}>
+                                {planName(rev.first_paid_product_id)}
+                                {rev.trial_product_id && (
+                                  <div style={{ fontSize: 11, color: "#6b7280" }}>
+                                    trial: {planName(rev.trial_product_id)}
+                                  </div>
+                                )}
+                              </td>
+                              <td>{rev.payments}</td>
+                              <td>{usd(rev.gross_usd, 2)}</td>
+                              <td>{usd(rev.net_usd, 2)}</td>
+                              <td style={{ whiteSpace: "nowrap" }}>{fmtDate(rev.last_paid_at)}</td>
+                              {!retentionMap ? (
+                                <td><span className="eng-muted">…</span></td>
+                              ) : (
+                                <td
+                                  style={{ whiteSpace: "nowrap" }}
+                                  title={
+                                    ret?.lessons
+                                      ? `${ret.active_days} of ${ret.target_days} target active days ` +
+                                        `(subscribed ${ret.tenure_days} days) · ${ret.lessons} lessons · ` +
+                                        `avg ${ret.avg_lesson_min ?? "—"} min · ` +
+                                        `${ret.completion_rate == null ? "—" : Math.round(ret.completion_rate * 100) + "%"} finished · ` +
+                                        `last lesson ${fmtDate(ret.last_lesson_at)}`
+                                      : "No lessons with the user speaking since subscribing"
+                                  }
+                                >
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                    <strong style={{ minWidth: 22 }}>{score}</strong>
+                                    <div style={{ width: 48, height: 6, borderRadius: 3, background: "#e5e7eb" }}>
+                                      <div
+                                        style={{
+                                          width: `${score}%`,
+                                          height: "100%",
+                                          borderRadius: 3,
+                                          background: retentionColor(score),
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                  <div style={{ fontSize: 11, color: "#6b7280" }}>
+                                    {ret?.lessons
+                                      ? `${ret.active_days}/${ret.target_days} days · ${ret.tenure_days}d subscribed`
+                                      : "no lessons"}
+                                  </div>
+                                </td>
+                              )}
+                            </>
+                          );
+                        })()}
                         {!sortField.column && !(sortField.key === "billingIssue" && selectedStatus === "PAST_DUE") && (
                           <td>{formatSortValue(sortField, sortField.value(user, sortCtx))}</td>
                         )}

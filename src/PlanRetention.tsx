@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { supabase } from "./lib/supabase";
 import { BUCKETS, BUCKET_COLORS, num, usd, planName, fmtDate } from "./lib/revenueFormat";
 
-// "Plan retention" view of the Revenue tab — how well each plan keeps the
+// "Plan retention" view of the dashboard's Revenue section — how well each plan keeps the
 // subscriptions that start on it. Reads revenue_plan_retention
 // (supabase/sql/revenue_plan_retention.sql), which returns raw counts per plan
 // (numerator + eligible denominator for every rate) so plan lengths can be

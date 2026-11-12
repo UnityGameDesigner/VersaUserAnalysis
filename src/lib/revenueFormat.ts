@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 
-// Plan / money formatting shared by the Revenue tab (src/Revenue.tsx) and its
+// Plan / money formatting shared by the dashboard (src/ActiveUserDashboard.tsx), its Revenue section (src/Revenue.tsx) and the
 // Lapsed users view (src/LapsedUsers.tsx).
 
 // Fixed order = fixed color: a bucket keeps its hue whatever the filter shows.

@@ -1,4 +1,4 @@
--- RPC behind the revenue sort options on the main dashboard
+-- No longer called by the app (the dashboard reads revenue_users instead, since the Revenue merge). Was: RPC behind the revenue sort options on the main dashboard
 -- (src/ActiveUserDashboard.tsx): one row per paying user from user_revenue.
 -- user_revenue is a view the browser can't read, so this is SECURITY DEFINER
 -- and refuses anyone not in admin_users. Idempotent — safe to re-run.
