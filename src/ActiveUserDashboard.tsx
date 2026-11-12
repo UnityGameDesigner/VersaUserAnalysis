@@ -305,6 +305,20 @@ function formatDate(iso: string | null | undefined): string {
 
 const SUPABASE_TABLE_NAME = "user_info";
 
+const COLUMN_ORDER_STORAGE_KEY = "versa-dashboard-user-columns-v1";
+
+// One column of the user table. `show: false` hides it for the current view
+// (it keeps its place in the saved order). `sortKey` is the SORT_FIELDS option
+// a click on the header sorts by.
+interface UserColumn {
+  key: string;
+  sortKey: string;
+  label: string;
+  title?: string;
+  show?: boolean;
+  cell: (user: ActiveUser) => React.ReactNode;
+}
+
 // Payment statuses this dashboard loads — the trial funnel and its two
 // outcomes: TRIAL (still deciding), ACTIVE (converted), PAST_DUE (trial ended
 // but payment failed). null / CANCELED are out of scope. Change here to
@@ -1101,6 +1115,24 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
     } catch { /* ignore */ }
   }, []);
 
+  // ── User table column order (drag a header to move it) ──
+  const [columnOrder, setColumnOrder] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLUMN_ORDER_STORAGE_KEY) ?? "null");
+      if (Array.isArray(saved)) return saved.filter((k): k is string => typeof k === "string");
+    } catch { /* ignore */ }
+    return [];
+  });
+  const [dragCol, setDragCol] = useState<string | null>(null);
+  const [dragOverCol, setDragOverCol] = useState<string | null>(null);
+  const saveColumnOrder = (order: string[]) => {
+    setColumnOrder(order);
+    try {
+      if (order.length) localStorage.setItem(COLUMN_ORDER_STORAGE_KEY, JSON.stringify(order));
+      else localStorage.removeItem(COLUMN_ORDER_STORAGE_KEY);
+    } catch { /* ignore */ }
+  };
+
   // ── Loading state ──────────────────────────────
   if (loading) {
     return (
@@ -1147,6 +1179,147 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
       </div>
     );
   }
+
+  // ── User table columns ─────────────────────────
+  const muted = <span className="eng-muted">—</span>;
+  const sub: React.CSSProperties = { fontSize: 11, color: "#6b7280" };
+  // A revenue column: "—" for users with no store transaction linked to them.
+  const revCell = (render: (rev: UserRevenue, user: ActiveUser) => React.ReactNode) => (user: ActiveUser) => {
+    const rev = revenueMap.get(user.user_id);
+    return rev ? render(rev, user) : muted;
+  };
+  const sortedByShown = !sortField.column && !(sortField.key === "billingIssue" && selectedStatus === "PAST_DUE");
+  const allColumns: UserColumn[] = [
+    { key: "name", sortKey: "name", label: "Name", cell: (user) => user.preferred_name || "N/A" },
+    {
+      key: "status", sortKey: "status", label: "Status",
+      cell: (user) => {
+        const status = user.payment_status || "";
+        const variant =
+          status === "ACTIVE" ? "paying" : status === "TRIAL" ? "trial" : status === "PAST_DUE" ? "pastdue" : "free";
+        const label =
+          status === "PAST_DUE" ? "Past Due" : status ? status.charAt(0) + status.slice(1).toLowerCase() : "N/A";
+        return <span className={`plan-pill plan-pill--${variant}`}>{label}</span>;
+      },
+    },
+    { key: "country", sortKey: "country", label: "Country", cell: (user) => getCountryFromTimezone(user.time_zone) },
+    { key: "language", sortKey: "nativeLanguage", label: "Language", cell: (user) => user.native_language || "N/A" },
+    { key: "age", sortKey: "age", label: "Age", cell: (user) => (user.age === null || user.age === -1 ? "N/A" : user.age) },
+    { key: "gender", sortKey: "gender", label: "Gender", cell: (user) => user.gender || "N/A" },
+    { key: "streak", sortKey: "streak", label: "Streak", cell: (user) => user.daily_streak },
+    { key: "tutor", sortKey: "tutor", label: "Tutor", cell: (user) => user.tutor || "N/A" },
+    {
+      key: "tier", sortKey: "tier", label: "Tier",
+      cell: (user) =>
+        user.demand_tier ? (
+          <span className={`tier-pill tier-pill--${user.demand_tier.toLowerCase()}`}>{user.demand_tier}</span>
+        ) : (
+          "N/A"
+        ),
+    },
+    { key: "source", sortKey: "attribution", label: "Source", cell: (user) => <span className="attribution-pill">{user.attribution || "N/A"}</span> },
+    { key: "lastLogin", sortKey: "lastLoggedIn", label: "Last Login", cell: (user) => formatDate(user.last_logged_in) },
+    { key: "firstLesson", sortKey: "firstLesson", label: "First Lesson", cell: (user) => formatDate(firstLessonMap.get(user.user_id)) },
+    { key: "daysUsed", sortKey: "uniqueDays", label: "Days Used", cell: (user) => uniqueDaysMap.get(user.user_id) ?? 0 },
+    {
+      key: "engagement", sortKey: "engagement", label: "Engagement",
+      title: "Distinct days the user came back and actually spoke (at least one real turn) — the primary engagement signal — with total user turns and lessons below. Onboarding lessons and no-speech opens are excluded.",
+      cell: (user) => {
+        const eng = engagementMap?.get(user.user_id);
+        if (!engagementMap) return <span className="eng-muted">…</span>;
+        if (!eng || eng.lessons === 0) return muted;
+        return (
+          <div className="eng-cell">
+            <span className="eng-score">
+              {eng.days} {eng.days === 1 ? "day" : "days"}
+            </span>
+            <span className="eng-sub">
+              {eng.turns.toLocaleString()} turns · {eng.lessons} {eng.lessons === 1 ? "lesson" : "lessons"}
+            </span>
+          </div>
+        );
+      },
+    },
+    {
+      key: "currentPlan", sortKey: "planLength", label: "Current Plan", title: "Most recent plan the user trialed or paid for",
+      cell: revCell((rev) => (
+        <div title={rev.current_product_id ?? ""}>
+          {rev.current_bucket || "—"}
+          <div style={sub}>{planName(rev.current_product_id)}</div>
+        </div>
+      )),
+    },
+    {
+      key: "firstPaidPlan", sortKey: "firstPaidPlan", label: "First Paid Plan", title: "First plan they paid for, and the plan their trial was on",
+      cell: revCell((rev) => (
+        <div title={rev.first_paid_product_id ?? ""}>
+          {planName(rev.first_paid_product_id)}
+          {rev.trial_product_id && <div style={sub}>trial: {planName(rev.trial_product_id)}</div>}
+        </div>
+      )),
+    },
+    { key: "payments", sortKey: "payments", label: "Payments", title: "Paid charges since Mar 1, 2026", cell: revCell((rev) => rev.payments) },
+    { key: "gross", sortKey: "gross", label: "Gross", title: "Price paid in USD since Mar 1, 2026", cell: revCell((rev) => usd(rev.gross_usd, 2)) },
+    { key: "net", sortKey: "net", label: "Net", title: "What we keep after the store's commission, tax and refunds", cell: revCell((rev) => usd(rev.net_usd, 2)) },
+    { key: "lastPaid", sortKey: "lastPaid", label: "Last Paid", cell: revCell((rev) => <span style={{ whiteSpace: "nowrap" }}>{fmtDate(rev.last_paid_at)}</span>) },
+    {
+      key: "retention", sortKey: "retention", label: "Retention", title: RETENTION_HELP,
+      cell: revCell((_rev, user) => {
+        if (!retentionMap) return <span className="eng-muted">…</span>;
+        const ret = retentionMap.get(user.user_id);
+        const score = ret?.score ?? 0;
+        return (
+          <div
+            style={{ whiteSpace: "nowrap" }}
+            title={
+              ret?.lessons
+                ? `${ret.active_days} of ${ret.target_days} target active days ` +
+                  `(subscribed ${ret.tenure_days} days) · ${ret.lessons} lessons · ` +
+                  `avg ${ret.avg_lesson_min ?? "—"} min · ` +
+                  `${ret.completion_rate == null ? "—" : Math.round(ret.completion_rate * 100) + "%"} finished · ` +
+                  `last lesson ${fmtDate(ret.last_lesson_at)}`
+                : "No lessons with the user speaking since subscribing"
+            }
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <strong style={{ minWidth: 22 }}>{score}</strong>
+              <div style={{ width: 48, height: 6, borderRadius: 3, background: "#e5e7eb" }}>
+                <div style={{ width: `${score}%`, height: "100%", borderRadius: 3, background: retentionColor(score) }} />
+              </div>
+            </div>
+            <div style={sub}>
+              {ret?.lessons ? `${ret.active_days}/${ret.target_days} days · ${ret.tenure_days}d subscribed` : "no lessons"}
+            </div>
+          </div>
+        );
+      }),
+    },
+    {
+      // The field the table is sorted by, when it has no column of its own.
+      key: "sortedBy", sortKey: sortField.key, label: sortField.label, title: "The field the table is sorted by", show: sortedByShown,
+      cell: (user) => formatSortValue(sortField, sortField.value(user, sortCtx)),
+    },
+    {
+      key: "billingIssue", sortKey: "billingIssue", label: "Billing Issue", show: selectedStatus === "PAST_DUE",
+      title: "When the user hit the billing issue (entered past-due). Only recorded for billing issues since tracking was added; older ones show —.",
+      cell: (user) => (pastDueDateMap.get(user.user_id) ? formatDate(pastDueDateMap.get(user.user_id)) : muted),
+    },
+  ];
+  // Saved order first; columns it doesn't mention (new ones) keep their default
+  // place at the end.
+  const fullOrder = [
+    ...columnOrder.filter((k) => allColumns.some((c) => c.key === k)),
+    ...allColumns.map((c) => c.key).filter((k) => !columnOrder.includes(k)),
+  ];
+  const columns = fullOrder.map((k) => allColumns.find((c) => c.key === k)!).filter((c) => c.show !== false);
+  const columnsReordered = fullOrder.some((k, i) => k !== allColumns[i].key);
+  // Drop `from` where `to` sits: after it when moving right, before it when moving left.
+  const moveColumn = (from: string, to: string) => {
+    if (from === to) return;
+    const next = fullOrder.filter((k) => k !== from);
+    next.splice(fullOrder.indexOf(to), 0, from);
+    saveColumnOrder(next);
+  };
 
   // ── Main dashboard ─────────────────────────────
   return (
@@ -1717,6 +1890,16 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 Engagement unavailable — run supabase/sql/engagement_by_user.sql
               </span>
             )}
+            {columnsReordered && (
+              <button
+                type="button"
+                className="filter-select"
+                onClick={() => saveColumnOrder([])}
+                title="Put the columns back in their original order"
+              >
+                Reset columns
+              </button>
+            )}
             {revenueError && (
               <span className="eng-warning" title={revenueError}>
                 Plan / revenue columns failed to load
@@ -1734,39 +1917,62 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                 <table className="data-table">
                   <thead className="table-head">
                     <tr>
-                      <th>Name</th>
-                      <th>Status</th>
-                      <th>Country</th>
-                      <th>Language</th>
-                      <th>Age</th>
-                      <th>Gender</th>
-                      <th>Streak</th>
-                      <th>Tutor</th>
-                      <th>Tier</th>
-                      <th>Source</th>
-                      <th>Last Login</th>
-                      <th>First Lesson</th>
-                      <th>Days Used</th>
-                      <th
-                        title="Distinct days the user came back and actually spoke (at least one real turn) — the primary engagement signal — with total user turns and lessons below. Onboarding lessons and no-speech opens are excluded."
-                      >
-                        Engagement
-                      </th>
-                      <th title="Most recent plan the user trialed or paid for">Current Plan</th>
-                      <th title="First plan they paid for, and the plan their trial was on">First Paid Plan</th>
-                      <th title="Paid charges since Mar 1, 2026">Payments</th>
-                      <th title="Price paid in USD since Mar 1, 2026">Gross</th>
-                      <th title="What we keep after the store's commission, tax and refunds">Net</th>
-                      <th>Last Paid</th>
-                      <th title={RETENTION_HELP}>Retention</th>
-                      {!sortField.column && !(sortField.key === "billingIssue" && selectedStatus === "PAST_DUE") && (
-                        <th title="The field the table is sorted by">{sortField.label}</th>
-                      )}
-                      {selectedStatus === "PAST_DUE" && (
-                        <th title="When the user hit the billing issue (entered past-due). Only recorded for billing issues since tracking was added; older ones show —.">
-                          Billing Issue
-                        </th>
-                      )}
+                      {columns.map((col) => {
+                        const sorted = sortBy === col.sortKey;
+                        const movingRight = dragCol !== null && fullOrder.indexOf(dragCol) < fullOrder.indexOf(col.key);
+                        return (
+                          <th
+                            key={col.key}
+                            title={`${col.title ? `${col.title}\n\n` : ""}Click to sort, click again to reverse. Drag to move this column.`}
+                            aria-sort={sorted ? (sortDesc ? "descending" : "ascending") : undefined}
+                            onClick={() => {
+                              if (sorted) {
+                                setSortDesc((d) => !d);
+                              } else {
+                                // First click uses the field's natural direction (newest / highest / A → Z).
+                                setSortBy(col.sortKey);
+                                setSortDesc(SORT_FIELDS.find((f) => f.key === col.sortKey)?.desc ?? true);
+                              }
+                            }}
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = "move";
+                              e.dataTransfer.setData("text/plain", col.key);
+                              setDragCol(col.key);
+                            }}
+                            onDragOver={(e) => {
+                              if (!dragCol) return;
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                              if (dragOverCol !== col.key) setDragOverCol(col.key);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (dragCol) moveColumn(dragCol, col.key);
+                              setDragCol(null);
+                              setDragOverCol(null);
+                            }}
+                            onDragEnd={() => {
+                              setDragCol(null);
+                              setDragOverCol(null);
+                            }}
+                            style={{
+                              cursor: "pointer",
+                              userSelect: "none",
+                              color: sorted ? "#111827" : undefined,
+                              opacity: dragCol === col.key ? 0.4 : 1,
+                              // Marks the edge the dragged column will land on.
+                              boxShadow:
+                                dragCol && dragOverCol === col.key && dragCol !== col.key
+                                  ? `inset ${movingRight ? "-3px" : "3px"} 0 0 #6366f1`
+                                  : undefined,
+                            }}
+                          >
+                            {col.label}
+                            {sorted && <span aria-hidden> {sortDesc ? "▼" : "▲"}</span>}
+                          </th>
+                        );
+                      })}
                       <th></th>
                     </tr>
                   </thead>
@@ -1791,160 +1997,9 @@ const ActiveUserDashboard: React.FC<{ onUserClick?: (userId: string) => void }> 
                           }
                         }}
                       >
-                        <td>{user.preferred_name || "N/A"}</td>
-                        <td>
-                          {(() => {
-                            const status = user.payment_status || "";
-                            const variant =
-                              status === "ACTIVE"
-                                ? "paying"
-                                : status === "TRIAL"
-                                ? "trial"
-                                : status === "PAST_DUE"
-                                ? "pastdue"
-                                : "free";
-                            const label =
-                              status === "PAST_DUE"
-                                ? "Past Due"
-                                : status
-                                ? status.charAt(0) + status.slice(1).toLowerCase()
-                                : "N/A";
-                            return (
-                              <span className={`plan-pill plan-pill--${variant}`}>
-                                {label}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td>{getCountryFromTimezone(user.time_zone)}</td>
-                        <td>{user.native_language || "N/A"}</td>
-                        <td>
-                          {user.age === null || user.age === -1
-                            ? "N/A"
-                            : user.age}
-                        </td>
-                        <td>{user.gender || "N/A"}</td>
-                        <td>{user.daily_streak}</td>
-                        <td>{user.tutor || "N/A"}</td>
-                        <td>
-                          {user.demand_tier ? (
-                            <span
-                              className={`tier-pill tier-pill--${user.demand_tier.toLowerCase()}`}
-                            >
-                              {user.demand_tier}
-                            </span>
-                          ) : (
-                            "N/A"
-                          )}
-                        </td>
-                        <td>
-                          <span className="attribution-pill">
-                            {user.attribution || "N/A"}
-                          </span>
-                        </td>
-                        <td>{formatDate(user.last_logged_in)}</td>
-                        <td>{formatDate(firstLessonMap.get(user.user_id))}</td>
-                        <td>{uniqueDaysMap.get(user.user_id) ?? 0}</td>
-                        <td>
-                          {(() => {
-                            const eng = engagementMap?.get(user.user_id);
-                            if (!engagementMap) return <span className="eng-muted">…</span>;
-                            if (!eng || eng.lessons === 0)
-                              return <span className="eng-muted">—</span>;
-                            return (
-                              <div className="eng-cell">
-                                <span className="eng-score">
-                                  {eng.days} {eng.days === 1 ? "day" : "days"}
-                                </span>
-                                <span className="eng-sub">
-                                  {eng.turns.toLocaleString()} turns · {eng.lessons}{" "}
-                                  {eng.lessons === 1 ? "lesson" : "lessons"}
-                                </span>
-                              </div>
-                            );
-                          })()}
-                        </td>
-                        {(() => {
-                          const rev = revenueMap.get(user.user_id);
-                          const muted = <span className="eng-muted">—</span>;
-                          if (!rev) {
-                            return (
-                              <>
-                                <td>{muted}</td><td>{muted}</td><td>{muted}</td><td>{muted}</td>
-                                <td>{muted}</td><td>{muted}</td><td>{muted}</td>
-                              </>
-                            );
-                          }
-                          const ret = retentionMap?.get(user.user_id);
-                          const score = ret?.score ?? 0;
-                          return (
-                            <>
-                              <td title={rev.current_product_id ?? ""}>
-                                {rev.current_bucket || "—"}
-                                <div style={{ fontSize: 11, color: "#6b7280" }}>{planName(rev.current_product_id)}</div>
-                              </td>
-                              <td title={rev.first_paid_product_id ?? ""}>
-                                {planName(rev.first_paid_product_id)}
-                                {rev.trial_product_id && (
-                                  <div style={{ fontSize: 11, color: "#6b7280" }}>
-                                    trial: {planName(rev.trial_product_id)}
-                                  </div>
-                                )}
-                              </td>
-                              <td>{rev.payments}</td>
-                              <td>{usd(rev.gross_usd, 2)}</td>
-                              <td>{usd(rev.net_usd, 2)}</td>
-                              <td style={{ whiteSpace: "nowrap" }}>{fmtDate(rev.last_paid_at)}</td>
-                              {!retentionMap ? (
-                                <td><span className="eng-muted">…</span></td>
-                              ) : (
-                                <td
-                                  style={{ whiteSpace: "nowrap" }}
-                                  title={
-                                    ret?.lessons
-                                      ? `${ret.active_days} of ${ret.target_days} target active days ` +
-                                        `(subscribed ${ret.tenure_days} days) · ${ret.lessons} lessons · ` +
-                                        `avg ${ret.avg_lesson_min ?? "—"} min · ` +
-                                        `${ret.completion_rate == null ? "—" : Math.round(ret.completion_rate * 100) + "%"} finished · ` +
-                                        `last lesson ${fmtDate(ret.last_lesson_at)}`
-                                      : "No lessons with the user speaking since subscribing"
-                                  }
-                                >
-                                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                    <strong style={{ minWidth: 22 }}>{score}</strong>
-                                    <div style={{ width: 48, height: 6, borderRadius: 3, background: "#e5e7eb" }}>
-                                      <div
-                                        style={{
-                                          width: `${score}%`,
-                                          height: "100%",
-                                          borderRadius: 3,
-                                          background: retentionColor(score),
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                  <div style={{ fontSize: 11, color: "#6b7280" }}>
-                                    {ret?.lessons
-                                      ? `${ret.active_days}/${ret.target_days} days · ${ret.tenure_days}d subscribed`
-                                      : "no lessons"}
-                                  </div>
-                                </td>
-                              )}
-                            </>
-                          );
-                        })()}
-                        {!sortField.column && !(sortField.key === "billingIssue" && selectedStatus === "PAST_DUE") && (
-                          <td>{formatSortValue(sortField, sortField.value(user, sortCtx))}</td>
-                        )}
-                        {selectedStatus === "PAST_DUE" && (
-                          <td>
-                            {pastDueDateMap.get(user.user_id) ? (
-                              formatDate(pastDueDateMap.get(user.user_id))
-                            ) : (
-                              <span className="eng-muted">—</span>
-                            )}
-                          </td>
-                        )}
+                        {columns.map((col) => (
+                          <td key={col.key}>{col.cell(user)}</td>
+                        ))}
                         <td>
                           <a
                             href={profileUrl}
