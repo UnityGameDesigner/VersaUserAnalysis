@@ -463,6 +463,25 @@ body,
   outline: none;
 }
 
+/* Free-typed number inside a compound chip (e.g. "Age older than 28") */
+.tx-chip-number {
+  width: 3.25rem;
+  border: none;
+  border-bottom: 1px solid #c7d2fe;
+  background: transparent;
+  color: #111827;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 0 0.1rem;
+  margin: 0;
+}
+
+.tx-chip-number:focus {
+  outline: none;
+  border-bottom-color: #4f46e5;
+}
+
 .tx-chip-caret {
   position: absolute;
   right: 0.7rem;

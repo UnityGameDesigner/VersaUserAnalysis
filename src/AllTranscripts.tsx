@@ -876,7 +876,10 @@ const AllTranscripts: React.FC = () => {
   // Rating filter is a comparator (</>/=) plus a threshold value.
   const [filterRatingOp, setFilterRatingOp] = useState<"All" | "lt" | "gt" | "eq">("All");
   const [filterRatingValue, setFilterRatingValue] = useState<string>("3");
+  // "All", an age-bucket label, or a comparator ("gt" | "lt" | "eq") that is
+  // applied against filterAgeValue.
   const [filterAge, setFilterAge] = useState<string>("All");
+  const [filterAgeValue, setFilterAgeValue] = useState<string>("28");
   const [filterRegion, setFilterRegion] = useState<string>("All");
   const [filterCountry, setFilterCountry] = useState<string>("All");
   const [filterLanguage, setFilterLanguage] = useState<string>("All");
@@ -1204,6 +1207,8 @@ const AllTranscripts: React.FC = () => {
 
   const filteredRows = React.useMemo(() => {
     const threshold = Number(filterRatingValue);
+    const ageThreshold = Number(filterAgeValue);
+    const ageThresholdValid = filterAgeValue.trim() !== "" && Number.isFinite(ageThreshold);
     const now = Date.now();
     return rows.filter((r) => {
       // Hide lessons with a future-dated timestamp — a few completed_lessons
@@ -1221,7 +1226,16 @@ const AllTranscripts: React.FC = () => {
       if (filterExitPhase !== "All" && exitKey(r.exit_phase) !== filterExitPhase) return false;
       if (filterExitTrigger !== "All" && exitKey(r.exit_trigger) !== filterExitTrigger) return false;
       const meta = userMeta.get(r.user_id);
-      if (filterAge !== "All" && getAgeBucket(meta?.age ?? null) !== filterAge) return false;
+      if (filterAge === "gt" || filterAge === "lt" || filterAge === "eq") {
+        // An empty or invalid number leaves the filter off rather than hiding everything.
+        if (ageThresholdValid) {
+          const age = meta?.age ?? null;
+          if (age === null || age === -1) return false;
+          if (filterAge === "gt" && !(age > ageThreshold)) return false;
+          if (filterAge === "lt" && !(age < ageThreshold)) return false;
+          if (filterAge === "eq" && age !== ageThreshold) return false;
+        }
+      } else if (filterAge !== "All" && getAgeBucket(meta?.age ?? null) !== filterAge) return false;
       if (filterRegion !== "All" && tzToRegion(meta?.time_zone ?? null) !== filterRegion) return false;
       if (filterCountry !== "All" && getCountryFromTimezone(meta?.time_zone ?? null) !== filterCountry) return false;
       if (filterLanguage !== "All" && (meta?.native_language ?? null) !== filterLanguage) return false;
@@ -1239,7 +1253,7 @@ const AllTranscripts: React.FC = () => {
       }
       return true;
     });
-  }, [rows, userMeta, countryConv, filterRatingOp, filterRatingValue, filterAge, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterCreator, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome, filterConvLikelihood]);
+  }, [rows, userMeta, countryConv, filterRatingOp, filterRatingValue, filterAge, filterAgeValue, filterRegion, filterCountry, filterLanguage, filterLearningLanguage, filterDemandTier, filterTutor, filterCreator, filterStatus, filterPlatform, filterEndedEarly, filterExitPhase, filterExitTrigger, filterTrialOutcome, filterConvLikelihood]);
 
   const toggleSelect = useCallback((row: TranscriptRow) => {
     setSelected((prev) => {
@@ -1411,21 +1425,44 @@ const AllTranscripts: React.FC = () => {
               )}
             </div>
 
-            <label className="tx-chip" data-active={filterAge !== "All"}>
+            <div className="tx-chip tx-chip--compound" data-active={filterAge !== "All"}>
               <span className="tx-chip-label">Age</span>
-              <select
-                className="tx-chip-select"
-                value={filterAge}
-                onChange={(e) => setFilterAge(e.target.value)}
-              >
-                {availableAgeBuckets.map((a) => (
-                  <option key={a} value={a}>{a === "All" ? "Any" : a}</option>
-                ))}
-              </select>
-              <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
-                <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </label>
+              <label className="tx-chip-segment">
+                <select
+                  className="tx-chip-select"
+                  value={filterAge}
+                  onChange={(e) => setFilterAge(e.target.value)}
+                  aria-label="Age filter"
+                >
+                  <option value="All">Any</option>
+                  <optgroup label="Compare">
+                    <option value="gt">Older than</option>
+                    <option value="lt">Younger than</option>
+                    <option value="eq">Exactly</option>
+                  </optgroup>
+                  <optgroup label="Age group">
+                    {availableAgeBuckets.filter((a) => a !== "All").map((a) => (
+                      <option key={a} value={a}>{a}</option>
+                    ))}
+                  </optgroup>
+                </select>
+                <svg className="tx-chip-caret" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </label>
+              {(filterAge === "gt" || filterAge === "lt" || filterAge === "eq") && (
+                <input
+                  className="tx-chip-number"
+                  type="number"
+                  min={0}
+                  max={120}
+                  step={1}
+                  value={filterAgeValue}
+                  onChange={(e) => setFilterAgeValue(e.target.value)}
+                  aria-label="Age in years"
+                />
+              )}
+            </div>
 
             <label className="tx-chip" data-active={filterRegion !== "All"}>
               <span className="tx-chip-label">Region</span>
