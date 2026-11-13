@@ -55,6 +55,13 @@ interface PlanRow {
   gross: number;
   net: number;
   refunds: number;
+  // Failed charges on a renewal of a paid period, and how many of those
+  // subscriptions were charged successfully afterwards; same for the first
+  // charge at the end of a free trial.
+  renewal_billing_issues: number;
+  renewal_billing_recovered: number;
+  trial_billing_issues: number;
+  trial_billing_recovered: number;
 }
 
 // Only what the payer KPIs need; the rest of revenue_users feeds the dashboard's user table.
@@ -80,7 +87,36 @@ function pct(n: number, d: number): string {
   return d > 0 ? `${((100 * n) / d).toFixed(1)}%` : "—";
 }
 
-type PlanSort = "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals";
+type PlanSort = "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals" | "renewal_billing_issues";
+
+const BILLING_TITLE =
+  "Renewal charges the store couldn't collect (failed card, no funds…), one per store transaction, since Mar 1 2026. " +
+  "Recovered = that subscription was charged successfully afterwards.";
+
+interface BillingCounts {
+  renewal_billing_issues: number;
+  renewal_billing_recovered: number;
+  trial_billing_issues: number;
+  trial_billing_recovered: number;
+}
+
+// Renewal billing issues, with how many were recovered underneath; the failed
+// trial-end charges are in the hover text.
+function billingCell(b: BillingCounts) {
+  const trial = b.trial_billing_issues
+    ? `Failed charges at the end of a free trial: ${b.trial_billing_issues.toLocaleString()} (${b.trial_billing_recovered.toLocaleString()} recovered).`
+    : "No failed charges at the end of a free trial.";
+  return (
+    <td title={trial}>
+      {b.renewal_billing_issues ? b.renewal_billing_issues.toLocaleString() : "—"}
+      {b.renewal_billing_issues > 0 && (
+        <div style={{ fontSize: 11, color: "#6b7280" }}>
+          {b.renewal_billing_recovered.toLocaleString()} recovered
+        </div>
+      )}
+    </td>
+  );
+}
 
 const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserClick }) => {
   const [platform, setPlatform] = useState<Platform>("all");
@@ -231,6 +267,10 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           trial_conversions: sum("trial_conversions"),
           gross: sum("gross"),
           net: sum("net"),
+          renewal_billing_issues: sum("renewal_billing_issues"),
+          renewal_billing_recovered: sum("renewal_billing_recovered"),
+          trial_billing_issues: sum("trial_billing_issues"),
+          trial_billing_recovered: sum("trial_billing_recovered"),
         };
       }),
     [plans, bucketsShown],
@@ -525,6 +565,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
             </div>
             <p className="ret-chart-sub">
               Trial conversion counts identified trials started 10+ days ago that were followed by a payment.
+              Billing issues are renewal charges the store couldn't collect (since Mar 1); "recovered" means the
+              subscription was charged successfully afterwards. Hover for failed trial-end charges.
             </p>
             <div className="table-container" style={{ marginTop: "0.5rem" }}>
               <table className="data-table">
@@ -534,6 +576,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                     <th>Payers</th>
                     <th>First purchases</th>
                     <th>Renewals</th>
+                    <th title={BILLING_TITLE}>Billing issues</th>
                     <th>Trial → paid</th>
                     <th>Gross</th>
                     <th>Net</th>
@@ -561,6 +604,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       <td>{b.payers.toLocaleString()}</td>
                       <td>{b.first_purchases.toLocaleString()}</td>
                       <td>{b.renewals.toLocaleString()}</td>
+                      {billingCell(b)}
                       <td title={`${b.trial_conversions} of ${b.trials_resolved} resolved trials`}>
                         {pct(b.trial_conversions, b.trials_resolved)}
                       </td>
@@ -599,6 +643,13 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                     <th style={sortTh(planSort === "renewals")} onClick={() => setPlanSort("renewals")}>
                       Renewals
                     </th>
+                    <th
+                      style={sortTh(planSort === "renewal_billing_issues")}
+                      onClick={() => setPlanSort("renewal_billing_issues")}
+                      title={BILLING_TITLE}
+                    >
+                      Billing issues
+                    </th>
                     <th style={sortTh(planSort === "gross")} onClick={() => setPlanSort("gross")}>
                       Gross
                     </th>
@@ -626,6 +677,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       </td>
                       <td>{p.first_purchases.toLocaleString()}</td>
                       <td>{p.renewals.toLocaleString()}</td>
+                      {billingCell(p)}
                       <td>{usd(p.gross)}</td>
                       <td>{usd(p.net)}</td>
                       <td>{p.refunds ? usd(-p.refunds) : "—"}</td>

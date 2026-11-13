@@ -12,6 +12,11 @@
 // campaigns:read scope; without it the refresh is skipped (logged in
 // subscription_sync_runs.audience_error) and the transaction sync still runs.
 //
+// It also pulls Superwall's billing_issue events (failed renewal / trial-end
+// charges) into subscription_billing_issues via
+// sync_subscription_billing_issues(). That pull is non-fatal too
+// (subscription_sync_runs.billing_issue_error).
+//
 // Secrets: SUPERWALL_API_KEY — an organization API key with the data:read scope
 // (plus campaigns:read for the audience names).
 // verify_jwt is off (pg_cron calls it with no JWT); a 20-minute throttle on
@@ -70,6 +75,46 @@ SELECT tx, ev, if(otx=tx,'',coalesce(otx,'')), coalesce(uid,''), p, prod, pt, to
   toString(toUnixTimestamp(ts)), multiIf(integ='app_store_connect','asc',integ='google_play','gp','rc'),
   toString(pw), nm, plc, toString(ex), toString(vr)
 FROM d LEFT JOIN n ON n.pid = d.pw ORDER BY ts, tx, ev`;
+
+// One row per store transaction that hit a billing issue (the store and
+// revenue_cat each send a copy, hours apart): the store copy wins, the earliest
+// report is the time. Column order must match sync_subscription_billing_issues().
+const BILLING_SQL = `
+WITH r AS (
+ SELECT transactionId, originalTransactionId, appUserId, applicationId, integration,
+  replaceRegexpOne(coalesce(productId,''), ':sw-auto$', '') prod, periodType, countryCode, ts,
+  if(integration='revenue_cat',1,0) pri,
+  match(coalesce(appUserId,''), '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') isu
+ FROM open_revenue.attributed_events_by_ts_rep
+ WHERE applicationId IN (7959,7960) AND isSandbox=0 AND integration IS NOT NULL
+   AND name='billing_issue' AND ts >= '2026-03-01' AND coalesce(transactionId,'') != ''),
+d AS (
+ SELECT transactionId tx,
+  argMin(originalTransactionId, pri) otx,
+  if(countIf(isu=1) > 0, argMinIf(appUserId, pri, isu=1), argMin(coalesce(appUserId,''), (coalesce(appUserId,'')='', pri))) uid,
+  argMin(if(applicationId=7959,'i','a'), pri) p, argMin(prod, pri) prod,
+  argMin(coalesce(periodType,''), pri) pt, argMin(coalesce(countryCode,''), pri) cc,
+  min(ts) t, argMin(integration, pri) integ
+ FROM r GROUP BY tx)
+SELECT tx, if(otx=tx,'',coalesce(otx,'')), coalesce(uid,''), p, prod, pt, cc,
+  toString(toUnixTimestamp(t)), multiIf(integ='app_store_connect','asc',integ='google_play','gp','rc')
+FROM d ORDER BY t, tx`;
+
+async function syncBillingIssues(): Promise<number> {
+  const res = await fetch(
+    `https://api.superwall.com/v2/organizations/${SUPERWALL_ORG_ID}/query?default_format=JSONCompact`,
+    { method: "POST", headers: { Authorization: `Bearer ${SUPERWALL_API_KEY}` }, body: BILLING_SQL },
+  );
+  if (!res.ok) throw new Error(`Superwall query ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const rows: string[][] = (await res.json()).data ?? [];
+  let upserted = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const { data, error } = await supabase.rpc("sync_subscription_billing_issues", { p_rows: rows.slice(i, i + CHUNK) });
+    if (error) throw new Error(`billing issue upsert: ${error.message}`);
+    upserted += data ?? 0;
+  }
+  return upserted;
+}
 
 const APPS: Record<string, string> = { "7959": "ios", "7960": "android" };
 
@@ -155,9 +200,20 @@ Deno.serve(async () => {
       console.warn("audience refresh skipped:", audience_error);
     }
 
+    let billing_issues_upserted: number | null = null;
+    let billing_issue_error: string | null = null;
+    try {
+      billing_issues_upserted = await syncBillingIssues();
+    } catch (e) {
+      billing_issue_error = e instanceof Error ? e.message : String(e);
+      console.warn("billing issue sync failed:", billing_issue_error);
+    }
+
     const result = {
       audiences_upserted,
       audience_error,
+      billing_issues_upserted,
+      billing_issue_error,
       rows_received: rows.length,
       rows_upserted: upserted,
       newest_purchase: newest,

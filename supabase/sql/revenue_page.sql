@@ -41,11 +41,19 @@ $$;
 -- One row per plan. Trial conversion counts only trials started 10+ days ago
 -- (every trial is <= 7 days, so those have resolved) and only identified users;
 -- converted = the same user has any paid transaction after the trial started.
-create or replace function public.revenue_by_plan(p_platform text default null)
+-- Billing issues (subscription_billing_issues) are failed charges, split by
+-- what was being charged: renewal_* = a renewal of a paid period, trial_* =
+-- the first charge at the end of a free trial. *_recovered = the same
+-- subscription was charged successfully afterwards.
+-- (Dropped first: adding columns changes the return type.)
+drop function if exists public.revenue_by_plan(text);
+create function public.revenue_by_plan(p_platform text default null)
 returns table (
   product_id text, platform text, bucket text, list_price_usd numeric, trial_days int,
   trial_starts int, trials_resolved int, trial_conversions int,
-  first_purchases int, renewals int, payers int, gross numeric, net numeric, refunds numeric
+  first_purchases int, renewals int, payers int, gross numeric, net numeric, refunds numeric,
+  renewal_billing_issues int, renewal_billing_recovered int,
+  trial_billing_issues int, trial_billing_recovered int
 )
 language sql stable security definer set search_path = public as $$
   with t as (
@@ -71,14 +79,34 @@ language sql stable security definer set search_path = public as $$
            coalesce(sum(proceeds_usd) filter (where event <> 'trial_start'), 0) as net,
            coalesce(sum(price_usd) filter (where event = 'refund'), 0) as refunds
     from t group by product_id
+  ), issues as (
+    select b.product_id,
+           coalesce(b.period_type, 'NORMAL') = 'TRIAL' as on_trial,
+           exists (select 1 from subscription_transactions p
+                   where coalesce(p.original_transaction_id, p.transaction_id)
+                           = coalesce(b.original_transaction_id, b.transaction_id)
+                     and p.event in ('initial_purchase', 'renewal') and p.price_usd > 0
+                     and p.purchased_at > b.occurred_at) as recovered
+    from subscription_billing_issues b
+    where p_platform is null or b.platform = p_platform
+  ), bi as (
+    select product_id,
+           count(*) filter (where not on_trial) as renewal_issues,
+           count(*) filter (where not on_trial and recovered) as renewal_recovered,
+           count(*) filter (where on_trial) as trial_issues,
+           count(*) filter (where on_trial and recovered) as trial_recovered
+    from issues group by product_id
   )
   select sp.product_id, sp.platform, plan_bucket(sp.period_months), sp.list_price_usd, sp.trial_days,
          coalesce(tr.starts, 0)::int, coalesce(tr.resolved, 0)::int, coalesce(tr.converted, 0)::int,
          coalesce(m.firsts, 0)::int, coalesce(m.renewals, 0)::int, coalesce(m.payers, 0)::int,
-         coalesce(m.gross, 0), coalesce(m.net, 0), coalesce(m.refunds, 0)
+         coalesce(m.gross, 0), coalesce(m.net, 0), coalesce(m.refunds, 0),
+         coalesce(bi.renewal_issues, 0)::int, coalesce(bi.renewal_recovered, 0)::int,
+         coalesce(bi.trial_issues, 0)::int, coalesce(bi.trial_recovered, 0)::int
   from subscription_products sp
   left join trials tr on tr.product_id = sp.product_id
   left join money m on m.product_id = sp.product_id
+  left join bi on bi.product_id = sp.product_id
   where coalesce(tr.starts, 0) + coalesce(m.firsts, 0) + coalesce(m.renewals, 0) > 0
      or coalesce(m.gross, 0) > 0
   order by coalesce(m.gross, 0) desc;

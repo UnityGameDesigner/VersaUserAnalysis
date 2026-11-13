@@ -25,11 +25,15 @@ create table if not exists public.subscription_sync_runs (
   unknown_products text[],          -- product ids not in subscription_products (excluded from coverage until added)
   error            text,
   audiences_upserted int,           -- superwall_audiences rows refreshed this run
-  audience_error   text             -- the audience refresh failing doesn't fail the run
+  audience_error   text,            -- the audience refresh failing doesn't fail the run
+  billing_issues_upserted int,      -- subscription_billing_issues rows changed this run
+  billing_issue_error text          -- the billing-issue pull failing doesn't fail the run
 );
 alter table public.subscription_sync_runs
   add column if not exists audiences_upserted int,
-  add column if not exists audience_error text;
+  add column if not exists audience_error text,
+  add column if not exists billing_issues_upserted int,
+  add column if not exists billing_issue_error text;
 alter table public.subscription_sync_runs enable row level security;
 
 -- Names for subscription_transactions.experiment_id: Superwall's "experiment"
@@ -135,6 +139,46 @@ $$;
 
 revoke all on function public.sync_subscription_transactions(jsonb) from public, anon, authenticated;
 grant execute on function public.sync_subscription_transactions(jsonb) to service_role;
+
+-- p_rows: JSON array of arrays, one per billing issue, in this column order:
+--   [transaction_id, original_transaction_id, app_user_id, platform ('i'|'a'),
+--    product_id, period_type, country, occurred_at (unix seconds), source ('asc'|'gp'|'rc')]
+-- Empty strings mean null. Service role only.
+create or replace function public.sync_subscription_billing_issues(p_rows jsonb)
+returns int
+language sql volatile security definer set search_path = public as $$
+  with r as (
+    select x->>0 as tx, nullif(x->>1, '') as otx, nullif(x->>2, '') as uid,
+           case x->>3 when 'i' then 'ios' else 'android' end as platform,
+           nullif(x->>4, '') as prod, nullif(x->>5, '') as pt, nullif(x->>6, '') as cc,
+           to_timestamp((x->>7)::bigint) as ts,
+           case x->>8 when 'asc' then 'app_store_connect' when 'gp' then 'google_play' else 'revenue_cat' end as src
+    from jsonb_array_elements(p_rows) x
+  ), up as (
+    insert into subscription_billing_issues as b (
+      transaction_id, original_transaction_id, app_user_id, user_id, platform, product_id,
+      period_type, country, occurred_at, source_integration)
+    select tx, otx, uid,
+           case when uid ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then uid::uuid end,
+           platform, prod, pt, cc, ts, src
+    from r
+    on conflict (transaction_id) do update set
+      original_transaction_id = excluded.original_transaction_id,
+      app_user_id             = excluded.app_user_id,
+      user_id                 = excluded.user_id,
+      platform                = excluded.platform,
+      product_id              = excluded.product_id,
+      period_type             = excluded.period_type,
+      country                 = excluded.country,
+      occurred_at             = excluded.occurred_at,
+      source_integration      = excluded.source_integration
+    where (b.*) is distinct from (excluded.*)
+    returning 1
+  )
+  select count(*)::int from up;
+$$;
+revoke all on function public.sync_subscription_billing_issues(jsonb) from public, anon, authenticated;
+grant execute on function public.sync_subscription_billing_issues(jsonb) to service_role;
 
 -- When the data was last refreshed, for the Revenue page.
 create or replace function public.subscription_sync_status()

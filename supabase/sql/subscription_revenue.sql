@@ -69,8 +69,30 @@ alter table public.subscription_transactions
 create index if not exists subscription_transactions_user_idx
   on public.subscription_transactions (user_id, purchased_at);
 
+-- Failed charges: the store tried to bill a subscription and couldn't (expired
+-- card, no funds, ...). One row per store transaction that hit the issue, from
+-- Superwall's billing_issue events since 2026-03-01. period_type says what was
+-- being charged: 'NORMAL' = a renewal of a paid period, 'TRIAL' = the first
+-- charge at the end of a free trial. Kept out of subscription_transactions so
+-- no money rollup has to exclude them.
+create table if not exists public.subscription_billing_issues (
+  transaction_id          text primary key,
+  original_transaction_id text,            -- the subscription (null when it equals transaction_id)
+  app_user_id             text,
+  user_id                 uuid,            -- set only when app_user_id is an auth uid
+  platform                text not null,
+  product_id              text,            -- normalized like subscription_products.product_id
+  period_type             text,            -- NORMAL | TRIAL | INTRO
+  country                 text,
+  occurred_at             timestamptz not null,   -- first time the store reported the issue
+  source_integration      text
+);
+create index if not exists subscription_billing_issues_product_idx
+  on public.subscription_billing_issues (product_id);
+
 alter table public.subscription_products enable row level security;
 alter table public.subscription_transactions enable row level security;
+alter table public.subscription_billing_issues enable row level security;
 
 -- Per-user rollup. "Paid" = initial_purchase / renewal / non_renewing_purchase
 -- with price > 0; refunds subtract from net. One grouped pass over the table —
