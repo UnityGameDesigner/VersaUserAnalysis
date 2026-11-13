@@ -18,6 +18,7 @@ import { format } from "date-fns";
 import { BUCKETS, BUCKET_COLORS, num, usd, planName } from "./lib/revenueFormat";
 import LapsedUsers from "./LapsedUsers";
 import PlanRetention from "./PlanRetention";
+import BillingIssues from "./BillingIssues";
 
 // The Revenue section of the main dashboard (src/ActiveUserDashboard.tsx) —
 // what each plan brought in. Reads the subscription_transactions /
@@ -190,6 +191,10 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           gross: num(r.gross),
           net: num(r.net),
           refunds: num(r.refunds),
+          renewal_billing_issues: num(r.renewal_billing_issues),
+          renewal_billing_recovered: num(r.renewal_billing_recovered),
+          trial_billing_issues: num(r.trial_billing_issues),
+          trial_billing_recovered: num(r.trial_billing_recovered),
         })),
       );
       setUsers(
@@ -558,6 +563,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
               </div>
             </div>
           )}
+
+          <BillingIssues plans={plans} platform={platform} />
 
           <div className="chart-container" style={{ marginTop: "1.25rem" }}>
             <div className="ret-chart-head">

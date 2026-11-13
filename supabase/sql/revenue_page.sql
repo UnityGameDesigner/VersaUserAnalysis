@@ -112,6 +112,34 @@ language sql stable security definer set search_path = public as $$
   order by coalesce(m.gross, 0) desc;
 $$;
 
+-- Billing issues by the month the store first reported them, split like
+-- revenue_by_plan: renewal_* = a failed renewal of a paid period, trial_* = a
+-- failed first charge at the end of a free trial; *_recovered = the same
+-- subscription was charged successfully afterwards.
+create or replace function public.revenue_billing_issues_monthly(p_platform text default null)
+returns table (
+  month date, renewal_issues int, renewal_recovered int, trial_issues int, trial_recovered int
+)
+language sql stable security definer set search_path = public as $$
+  with issues as (
+    select date_trunc('month', b.occurred_at)::date as month,
+           coalesce(b.period_type, 'NORMAL') = 'TRIAL' as on_trial,
+           exists (select 1 from subscription_transactions p
+                   where coalesce(p.original_transaction_id, p.transaction_id)
+                           = coalesce(b.original_transaction_id, b.transaction_id)
+                     and p.event in ('initial_purchase', 'renewal') and p.price_usd > 0
+                     and p.purchased_at > b.occurred_at) as recovered
+    from subscription_billing_issues b
+    where p_platform is null or b.platform = p_platform
+  )
+  select month,
+         (count(*) filter (where not on_trial))::int,
+         (count(*) filter (where not on_trial and recovered))::int,
+         (count(*) filter (where on_trial))::int,
+         (count(*) filter (where on_trial and recovered))::int
+  from issues group by month order by month;
+$$;
+
 -- Identified users with any plan activity, highest gross first. conv_* is
 -- where they converted (user_revenue): the paywall, the placement that showed
 -- it, and the campaign audience — named when superwall_audiences knows it.
