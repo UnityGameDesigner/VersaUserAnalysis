@@ -88,11 +88,64 @@ function pct(n: number, d: number): string {
   return d > 0 ? `${((100 * n) / d).toFixed(1)}%` : "—";
 }
 
-type PlanSort = "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals" | "renewal_billing_issues";
+type PlanSort =
+  | "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals" | "renewal_billing_issues"
+  | "m1" | "m3" | "m6";
+
+const KEEP_TITLE =
+  "Renewal rate: share of subscriptions that started on this plan and were still paying N months after their " +
+  "first payment (3-day grace), among those old enough to have reached that point. Greyed where the plan hasn't " +
+  "come up for renewal yet by then.";
 
 const BILLING_TITLE =
   "Renewal charges the store couldn't collect (failed card, no funds…), one per store transaction, since Mar 1 2026. " +
   "Recovered = that subscription was charged successfully afterwards.";
+
+// "Still paying N months after the first payment" per plan, from
+// revenue_plan_retention (the same numbers as the Plan retention view): kept /
+// eligible, where eligible = subscriptions old enough to have reached month N.
+interface PlanKeep {
+  period_months: number | null;
+  m1_kept: number; m1_elig: number;
+  m3_kept: number; m3_elig: number;
+  m6_kept: number; m6_elig: number;
+}
+const KEEP_MONTHS = [1, 3, 6] as const;
+const KEEP_MIN = 5; // below this many eligible subscriptions a rate isn't shown
+const BUCKET_MONTHS: Record<string, number> = { Weekly: 0.25, Monthly: 1, "3-month": 3, Yearly: 12 };
+
+// One cell per checkpoint. A plan that hasn't come up for renewal by month N
+// (a yearly plan at 1–6 months) is ~100% by construction, so it's greyed out.
+function keepCells(k: PlanKeep | undefined, loading: boolean) {
+  return KEEP_MONTHS.map((n) => {
+    if (!k) return <td key={n}>{loading ? "…" : "—"}</td>;
+    const kept = k[`m${n}_kept`];
+    const elig = k[`m${n}_elig`];
+    if (elig < KEEP_MIN) {
+      return (
+        <td key={n} title={`${kept} of ${elig} subscriptions old enough — too few to show a rate`}>
+          —
+        </td>
+      );
+    }
+    const due = k.period_months != null && n >= k.period_months;
+    return (
+      <td
+        key={n}
+        style={due ? undefined : { color: "#9ca3af" }}
+        title={
+          `${kept} of ${elig} subscriptions at least ${n} month${n > 1 ? "s" : ""} old were still paying` +
+          (due ? "" : ". No renewal has come due by this point, so only refunds lower it")
+        }
+      >
+        {Math.round((kept / elig) * 100)}%
+        <div style={{ fontSize: 11, color: "#6b7280" }}>
+          {kept.toLocaleString()} / {elig.toLocaleString()}
+        </div>
+      </td>
+    );
+  });
+}
 
 interface BillingCounts {
   renewal_billing_issues: number;
@@ -131,6 +184,40 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
   const [planSort, setPlanSort] = useState<PlanSort>("gross");
   const [subDays, setSubDays] = useState<SubDayRow[]>([]);
   const [subRange, setSubRange] = useState<SubRange>(90);
+  const [keep, setKeep] = useState<Map<string, PlanKeep>>(new Map());
+  const [keepLoading, setKeepLoading] = useState(true);
+  const [keepError, setKeepError] = useState<string | null>(null);
+
+  // Renewal rates load on their own: the RPC takes a few seconds and the rest
+  // of the section shouldn't wait for it.
+  useEffect(() => {
+    let cancelled = false;
+    setKeepLoading(true);
+    setKeepError(null);
+    supabase
+      .rpc("revenue_plan_retention", { p_platform: platform === "all" ? null : platform })
+      .then(({ data, error: e }) => {
+        if (cancelled) return;
+        const m = new Map<string, PlanKeep>();
+        // An rpc() error must surface — read as "empty" it would look like "no renewals".
+        if (e) setKeepError(e.message);
+        else {
+          for (const r of (data ?? []) as Record<string, unknown>[]) {
+            m.set(String(r.product_id), {
+              period_months: r.period_months == null ? null : num(r.period_months),
+              m1_kept: num(r.m1_kept), m1_elig: num(r.m1_elig),
+              m3_kept: num(r.m3_kept), m3_elig: num(r.m3_elig),
+              m6_kept: num(r.m6_kept), m6_elig: num(r.m6_elig),
+            });
+          }
+        }
+        setKeep(m);
+        setKeepLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [platform]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -263,7 +350,17 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
       bucketsShown.map((b) => {
         const rows = plans.filter((p) => p.bucket === b);
         const sum = (k: keyof PlanRow) => rows.reduce((a, r) => a + (r[k] as number), 0);
+        const ks = rows.map((r) => keep.get(r.product_id)).filter((k): k is PlanKeep => !!k);
+        const ksum = (f: keyof PlanKeep) => ks.reduce((a, k) => a + (k[f] as number), 0);
         return {
+          keep: ks.length
+            ? ({
+                period_months: BUCKET_MONTHS[b] ?? null,
+                m1_kept: ksum("m1_kept"), m1_elig: ksum("m1_elig"),
+                m3_kept: ksum("m3_kept"), m3_elig: ksum("m3_elig"),
+                m6_kept: ksum("m6_kept"), m6_elig: ksum("m6_elig"),
+              } as PlanKeep)
+            : undefined,
           bucket: b,
           payers: sum("payers"),
           first_purchases: sum("first_purchases"),
@@ -278,14 +375,21 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           trial_billing_recovered: sum("trial_billing_recovered"),
         };
       }),
-    [plans, bucketsShown],
+    [plans, bucketsShown, keep],
   );
 
   const sortedPlans = useMemo(() => {
-    const key = (p: PlanRow) =>
-      planSort === "conv" ? (p.trials_resolved ? p.trial_conversions / p.trials_resolved : -1) : p[planSort];
+    const key = (p: PlanRow): number => {
+      if (planSort === "conv") return p.trials_resolved ? p.trial_conversions / p.trials_resolved : -1;
+      if (planSort === "m1" || planSort === "m3" || planSort === "m6") {
+        const k = keep.get(p.product_id);
+        const elig = k ? k[`${planSort}_elig`] : 0;
+        return k && elig >= KEEP_MIN ? k[`${planSort}_kept`] / elig : -1;
+      }
+      return p[planSort];
+    };
     return [...plans].sort((a, b) => key(b) - key(a));
-  }, [plans, planSort]);
+  }, [plans, planSort, keep]);
 
   const sortTh = (active: boolean): React.CSSProperties => ({
     cursor: "pointer",
@@ -573,7 +677,10 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
             <p className="ret-chart-sub">
               Trial conversion counts identified trials started 10+ days ago that were followed by a payment.
               Billing issues are renewal charges the store couldn't collect (since Mar 1); "recovered" means the
-              subscription was charged successfully afterwards. Hover for failed trial-end charges.
+              subscription was charged successfully afterwards. Hover for failed trial-end charges. "Paying
+              after N mo" is the renewal rate: subscriptions that started on the plan and were still paying N
+              months after their first payment, of those old enough to tell (greyed where no renewal was due yet).
+              {keepError && <span style={{ color: "#b91c1c" }}> Couldn't load renewal rates: {keepError}</span>}
             </p>
             <div className="table-container" style={{ marginTop: "0.5rem" }}>
               <table className="data-table">
@@ -584,6 +691,11 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                     <th>First purchases</th>
                     <th>Renewals</th>
                     <th title={BILLING_TITLE}>Billing issues</th>
+                    {KEEP_MONTHS.map((n) => (
+                      <th key={n} title={KEEP_TITLE}>
+                        {n === 1 ? "Paying after 1 mo" : `${n} mo`}
+                      </th>
+                    ))}
                     <th>Trial → paid</th>
                     <th>Gross</th>
                     <th>Net</th>
@@ -612,6 +724,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       <td>{b.first_purchases.toLocaleString()}</td>
                       <td>{b.renewals.toLocaleString()}</td>
                       {billingCell(b)}
+                      {keepCells(b.keep, keepLoading)}
                       <td title={`${b.trial_conversions} of ${b.trials_resolved} resolved trials`}>
                         {pct(b.trial_conversions, b.trials_resolved)}
                       </td>
@@ -657,6 +770,16 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                     >
                       Billing issues
                     </th>
+                    {KEEP_MONTHS.map((n) => (
+                      <th
+                        key={n}
+                        style={sortTh(planSort === `m${n}`)}
+                        onClick={() => setPlanSort(`m${n}`)}
+                        title={KEEP_TITLE}
+                      >
+                        {n === 1 ? "Paying after 1 mo" : `${n} mo`}
+                      </th>
+                    ))}
                     <th style={sortTh(planSort === "gross")} onClick={() => setPlanSort("gross")}>
                       Gross
                     </th>
@@ -685,6 +808,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       <td>{p.first_purchases.toLocaleString()}</td>
                       <td>{p.renewals.toLocaleString()}</td>
                       {billingCell(p)}
+                      {keepCells(keep.get(p.product_id), keepLoading)}
                       <td>{usd(p.gross)}</td>
                       <td>{usd(p.net)}</td>
                       <td>{p.refunds ? usd(-p.refunds) : "—"}</td>
