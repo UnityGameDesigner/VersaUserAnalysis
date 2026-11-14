@@ -45,6 +45,15 @@ $$;
 -- what was being charged: renewal_* = a renewal of a paid period, trial_* =
 -- the first charge at the end of a free trial. *_recovered = the same
 -- subscription was charged successfully afterwards.
+-- active_subs / set_to_renew describe the subscriptions on the plan right now
+-- (by the plan of their latest non-refunded payment; trials not counted):
+--   active_subs  = paid period still running, or it ran out within the last 30
+--                  days with a billing issue still open (the store is retrying)
+--                  — and the store hasn't reported it expired since that payment
+--   set_to_renew = of those, auto-renew is on (no cancellation newer than the
+--                  payment and the last uncancellation) and no billing issue
+--                  since the payment.
+-- set_to_renew / active_subs is the best the next renewal can do.
 -- (Dropped first: adding columns changes the return type.)
 drop function if exists public.revenue_by_plan(text);
 create function public.revenue_by_plan(p_platform text default null)
@@ -53,7 +62,8 @@ returns table (
   trial_starts int, trials_resolved int, trial_conversions int,
   first_purchases int, renewals int, payers int, gross numeric, net numeric, refunds numeric,
   renewal_billing_issues int, renewal_billing_recovered int,
-  trial_billing_issues int, trial_billing_recovered int
+  trial_billing_issues int, trial_billing_recovered int,
+  active_subs int, set_to_renew int
 )
 language sql stable security definer set search_path = public as $$
   with t as (
@@ -96,17 +106,44 @@ language sql stable security definer set search_path = public as $$
            count(*) filter (where on_trial) as trial_issues,
            count(*) filter (where on_trial and recovered) as trial_recovered
     from issues group by product_id
+  ), last_pay as (
+    select distinct on (chain) chain, product_id, transaction_id, purchased_at
+    from (select st.*, coalesce(st.original_transaction_id, st.transaction_id) as chain from t st) x
+    where event in ('initial_purchase', 'renewal') and price_usd > 0
+    order by chain, purchased_at desc
+  ), state as (
+    select lp.product_id,
+           lp.purchased_at + (case p.period when 'week' then interval '1 week' when 'month' then interval '1 month'
+                                            when 'year' then interval '1 year' end * p.period_count) as period_end,
+           coalesce(ss.cancelled_at > greatest(lp.purchased_at, coalesce(ss.uncancelled_at, '-infinity')), false) as cancelled,
+           coalesce(ss.expired_at > lp.purchased_at, false) as expired,
+           exists (select 1 from subscription_billing_issues b
+                   where coalesce(b.original_transaction_id, b.transaction_id) = lp.chain
+                     and b.occurred_at > lp.purchased_at) as issue_open
+    from last_pay lp
+    join subscription_products p on p.product_id = lp.product_id
+    left join subscription_status ss on ss.chain = lp.chain
+    where not exists (select 1 from subscription_transactions r
+                      where r.transaction_id = lp.transaction_id and r.event = 'refund')
+  ), now_subs as (
+    select product_id,
+           count(*) filter (where not expired and (period_end > now()
+                              or (issue_open and period_end > now() - interval '30 days'))) as active_subs,
+           count(*) filter (where not expired and period_end > now() and not cancelled and not issue_open) as set_to_renew
+    from state group by product_id
   )
   select sp.product_id, sp.platform, plan_bucket(sp.period_months), sp.list_price_usd, sp.trial_days,
          coalesce(tr.starts, 0)::int, coalesce(tr.resolved, 0)::int, coalesce(tr.converted, 0)::int,
          coalesce(m.firsts, 0)::int, coalesce(m.renewals, 0)::int, coalesce(m.payers, 0)::int,
          coalesce(m.gross, 0), coalesce(m.net, 0), coalesce(m.refunds, 0),
          coalesce(bi.renewal_issues, 0)::int, coalesce(bi.renewal_recovered, 0)::int,
-         coalesce(bi.trial_issues, 0)::int, coalesce(bi.trial_recovered, 0)::int
+         coalesce(bi.trial_issues, 0)::int, coalesce(bi.trial_recovered, 0)::int,
+         coalesce(ns.active_subs, 0)::int, coalesce(ns.set_to_renew, 0)::int
   from subscription_products sp
   left join trials tr on tr.product_id = sp.product_id
   left join money m on m.product_id = sp.product_id
   left join bi on bi.product_id = sp.product_id
+  left join now_subs ns on ns.product_id = sp.product_id
   where coalesce(tr.starts, 0) + coalesce(m.firsts, 0) + coalesce(m.renewals, 0) > 0
      or coalesce(m.gross, 0) > 0
   order by coalesce(m.gross, 0) desc;

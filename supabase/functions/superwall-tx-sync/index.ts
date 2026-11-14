@@ -17,6 +17,9 @@
 // sync_subscription_billing_issues(). That pull is non-fatal too
 // (subscription_sync_runs.billing_issue_error).
 //
+// And each subscription's renewal status (cancelled / uncancelled / expired)
+// into subscription_status via sync_subscription_status(), also non-fatal.
+//
 // Secrets: SUPERWALL_API_KEY — an organization API key with the data:read scope
 // (plus campaigns:read for the audience names).
 // verify_jwt is off (pg_cron calls it with no JWT); a 20-minute throttle on
@@ -116,6 +119,37 @@ async function syncBillingIssues(): Promise<number> {
   return upserted;
 }
 
+// Renewal status per subscription (originalTransactionId): latest cancellation
+// (auto-renew off; refunds excluded), uncancellation and expiration. All time,
+// since a yearly plan still running may have been cancelled long ago. Column
+// order must match sync_subscription_status().
+const STATUS_SQL = `
+SELECT originalTransactionId, if(applicationId=7959,'i','a'),
+  toString(toUnixTimestamp(maxIf(ts, name='cancellation' AND coalesce(price,0) >= 0))),
+  argMaxIf(JSONExtractString(props,'cancelReason'), ts, name='cancellation' AND coalesce(price,0) >= 0),
+  toString(toUnixTimestamp(maxIf(ts, name='uncancellation'))),
+  toString(toUnixTimestamp(maxIf(ts, name='expiration')))
+FROM open_revenue.attributed_events_by_ts_rep
+WHERE applicationId IN (7959,7960) AND isSandbox=0 AND integration IS NOT NULL
+  AND name IN ('cancellation','uncancellation','expiration') AND originalTransactionId != ''
+GROUP BY originalTransactionId, applicationId ORDER BY originalTransactionId`;
+
+async function syncStatus(): Promise<number> {
+  const res = await fetch(
+    `https://api.superwall.com/v2/organizations/${SUPERWALL_ORG_ID}/query?default_format=JSONCompact`,
+    { method: "POST", headers: { Authorization: `Bearer ${SUPERWALL_API_KEY}` }, body: STATUS_SQL },
+  );
+  if (!res.ok) throw new Error(`Superwall query ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const rows: string[][] = (await res.json()).data ?? [];
+  let upserted = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const { data, error } = await supabase.rpc("sync_subscription_status", { p_rows: rows.slice(i, i + CHUNK) });
+    if (error) throw new Error(`status upsert: ${error.message}`);
+    upserted += data ?? 0;
+  }
+  return upserted;
+}
+
 const APPS: Record<string, string> = { "7959": "ios", "7960": "android" };
 
 // Every campaign audience (live and archived campaigns) → superwall_audiences.
@@ -209,7 +243,18 @@ Deno.serve(async () => {
       console.warn("billing issue sync failed:", billing_issue_error);
     }
 
+    let status_upserted: number | null = null;
+    let status_error: string | null = null;
+    try {
+      status_upserted = await syncStatus();
+    } catch (e) {
+      status_error = e instanceof Error ? e.message : String(e);
+      console.warn("status sync failed:", status_error);
+    }
+
     const result = {
+      status_upserted,
+      status_error,
       audiences_upserted,
       audience_error,
       billing_issues_upserted,

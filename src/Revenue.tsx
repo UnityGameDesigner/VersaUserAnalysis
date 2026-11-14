@@ -63,6 +63,10 @@ interface PlanRow {
   renewal_billing_recovered: number;
   trial_billing_issues: number;
   trial_billing_recovered: number;
+  // Subscriptions on the plan right now (paid period running, or in a billing
+  // retry), and how many of them still have auto-renew on and no billing issue.
+  active_subs: number;
+  set_to_renew: number;
 }
 
 // Only what the payer KPIs need; the rest of revenue_users feeds the dashboard's user table.
@@ -90,7 +94,7 @@ function pct(n: number, d: number): string {
 
 type PlanSort =
   | "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals" | "renewal_billing_issues"
-  | "m1" | "m3" | "m6";
+  | "m1" | "m3" | "m6" | "set_to_renew" | "best";
 
 const KEEP_TITLE =
   "Renewal rate: share of subscriptions that started on this plan and were still paying N months after their " +
@@ -145,6 +149,29 @@ function keepCells(k: PlanKeep | undefined, loading: boolean) {
       </td>
     );
   });
+}
+
+const SET_TO_RENEW_TITLE =
+  "Active subscriptions on this plan right now that can still renew: auto-renew is on (not cancelled) and there's " +
+  "no billing issue. Shown against all active subscriptions (paid period still running, or the store is retrying " +
+  "a failed charge). Trials aren't counted.";
+const BEST_RENEWAL_TITLE =
+  "Best possible renewal rate: set to renew ÷ active subscriptions. The most the plan's next renewal can reach if " +
+  "nobody else cancels or hits a billing issue.";
+
+// Two cells: "set to renew" out of active subscriptions, and that as a rate.
+function renewCells(r: { active_subs: number; set_to_renew: number }) {
+  if (!r.active_subs) return [<td key="n">—</td>, <td key="r">—</td>];
+  const lost = r.active_subs - r.set_to_renew;
+  return [
+    <td key="n" title={`${lost.toLocaleString()} of ${r.active_subs.toLocaleString()} active subscriptions are cancelled or in a billing issue`}>
+      {r.set_to_renew.toLocaleString()}
+      <div style={{ fontSize: 11, color: "#6b7280" }}>of {r.active_subs.toLocaleString()} active</div>
+    </td>,
+    <td key="r" style={r.active_subs < KEEP_MIN ? { color: "#9ca3af" } : undefined}>
+      {Math.round((r.set_to_renew / r.active_subs) * 100)}%
+    </td>,
+  ];
 }
 
 interface BillingCounts {
@@ -282,6 +309,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           renewal_billing_recovered: num(r.renewal_billing_recovered),
           trial_billing_issues: num(r.trial_billing_issues),
           trial_billing_recovered: num(r.trial_billing_recovered),
+          active_subs: num(r.active_subs),
+          set_to_renew: num(r.set_to_renew),
         })),
       );
       setUsers(
@@ -373,6 +402,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           renewal_billing_recovered: sum("renewal_billing_recovered"),
           trial_billing_issues: sum("trial_billing_issues"),
           trial_billing_recovered: sum("trial_billing_recovered"),
+          active_subs: sum("active_subs"),
+          set_to_renew: sum("set_to_renew"),
         };
       }),
     [plans, bucketsShown, keep],
@@ -380,6 +411,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
 
   const sortedPlans = useMemo(() => {
     const key = (p: PlanRow): number => {
+      if (planSort === "best") return p.active_subs ? p.set_to_renew / p.active_subs : -1;
       if (planSort === "conv") return p.trials_resolved ? p.trial_conversions / p.trials_resolved : -1;
       if (planSort === "m1" || planSort === "m3" || planSort === "m6") {
         const k = keep.get(p.product_id);
@@ -680,6 +712,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
               subscription was charged successfully afterwards. Hover for failed trial-end charges. "Paying
               after N mo" is the renewal rate: subscriptions that started on the plan and were still paying N
               months after their first payment, of those old enough to tell (greyed where no renewal was due yet).
+              "Set to renew" counts the active subscriptions that haven't been cancelled and aren't in a billing
+              issue right now; "Best possible renewal" is that share of all active subscriptions.
               {keepError && <span style={{ color: "#b91c1c" }}> Couldn't load renewal rates: {keepError}</span>}
             </p>
             <div className="table-container" style={{ marginTop: "0.5rem" }}>
@@ -696,6 +730,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                         {n === 1 ? "Paying after 1 mo" : `${n} mo`}
                       </th>
                     ))}
+                    <th title={SET_TO_RENEW_TITLE}>Set to renew</th>
+                    <th title={BEST_RENEWAL_TITLE}>Best possible renewal</th>
                     <th>Trial → paid</th>
                     <th>Gross</th>
                     <th>Net</th>
@@ -725,6 +761,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       <td>{b.renewals.toLocaleString()}</td>
                       {billingCell(b)}
                       {keepCells(b.keep, keepLoading)}
+                      {renewCells(b)}
                       <td title={`${b.trial_conversions} of ${b.trials_resolved} resolved trials`}>
                         {pct(b.trial_conversions, b.trials_resolved)}
                       </td>
@@ -780,6 +817,20 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                         {n === 1 ? "Paying after 1 mo" : `${n} mo`}
                       </th>
                     ))}
+                    <th
+                      style={sortTh(planSort === "set_to_renew")}
+                      onClick={() => setPlanSort("set_to_renew")}
+                      title={SET_TO_RENEW_TITLE}
+                    >
+                      Set to renew
+                    </th>
+                    <th
+                      style={sortTh(planSort === "best")}
+                      onClick={() => setPlanSort("best")}
+                      title={BEST_RENEWAL_TITLE}
+                    >
+                      Best possible renewal
+                    </th>
                     <th style={sortTh(planSort === "gross")} onClick={() => setPlanSort("gross")}>
                       Gross
                     </th>
@@ -809,6 +860,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       <td>{p.renewals.toLocaleString()}</td>
                       {billingCell(p)}
                       {keepCells(keep.get(p.product_id), keepLoading)}
+                      {renewCells(p)}
                       <td>{usd(p.gross)}</td>
                       <td>{usd(p.net)}</td>
                       <td>{p.refunds ? usd(-p.refunds) : "—"}</td>

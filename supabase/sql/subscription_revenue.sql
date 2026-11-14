@@ -90,8 +90,24 @@ create table if not exists public.subscription_billing_issues (
 create index if not exists subscription_billing_issues_product_idx
   on public.subscription_billing_issues (product_id);
 
+-- Renewal status per store subscription (chain = Superwall's
+-- originalTransactionId = coalesce(original_transaction_id, transaction_id) in
+-- the tables above): the latest time the store reported auto-renew being
+-- turned off, turned back on, and the subscription expiring. A cancellation
+-- only stands if it is newer than the last payment and the last uncancellation.
+-- Refunds are not cancellations here (they are 'refund' transactions).
+create table if not exists public.subscription_status (
+  chain          text primary key,
+  platform       text not null,
+  cancelled_at   timestamptz,
+  cancel_reason  text,            -- UNSUBSCRIBE | BILLING_ERROR | CUSTOMER_SUPPORT | ...
+  uncancelled_at timestamptz,
+  expired_at     timestamptz
+);
+
 alter table public.subscription_products enable row level security;
 alter table public.subscription_transactions enable row level security;
+alter table public.subscription_status enable row level security;
 alter table public.subscription_billing_issues enable row level security;
 
 -- Per-user rollup. "Paid" = initial_purchase / renewal / non_renewing_purchase

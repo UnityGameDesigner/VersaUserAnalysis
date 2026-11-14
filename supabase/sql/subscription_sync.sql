@@ -27,13 +27,17 @@ create table if not exists public.subscription_sync_runs (
   audiences_upserted int,           -- superwall_audiences rows refreshed this run
   audience_error   text,            -- the audience refresh failing doesn't fail the run
   billing_issues_upserted int,      -- subscription_billing_issues rows changed this run
-  billing_issue_error text          -- the billing-issue pull failing doesn't fail the run
+  billing_issue_error text,         -- the billing-issue pull failing doesn't fail the run
+  status_upserted  int,             -- subscription_status rows changed this run
+  status_error     text             -- the cancellation-status pull failing doesn't fail the run
 );
 alter table public.subscription_sync_runs
   add column if not exists audiences_upserted int,
   add column if not exists audience_error text,
   add column if not exists billing_issues_upserted int,
-  add column if not exists billing_issue_error text;
+  add column if not exists billing_issue_error text,
+  add column if not exists status_upserted int,
+  add column if not exists status_error text;
 alter table public.subscription_sync_runs enable row level security;
 
 -- Names for subscription_transactions.experiment_id: Superwall's "experiment"
@@ -179,6 +183,35 @@ language sql volatile security definer set search_path = public as $$
 $$;
 revoke all on function public.sync_subscription_billing_issues(jsonb) from public, anon, authenticated;
 grant execute on function public.sync_subscription_billing_issues(jsonb) to service_role;
+
+-- p_rows: JSON array of [chain, platform ('i'|'a'), cancelled_at, cancel_reason,
+-- uncancelled_at, expired_at] — times in unix seconds, 0 or '' = never.
+-- Service role only.
+create or replace function public.sync_subscription_status(p_rows jsonb)
+returns int
+language sql volatile security definer set search_path = public as $$
+  with r as (
+    select x->>0 as chain, case x->>1 when 'i' then 'ios' else 'android' end as platform,
+           to_timestamp(nullif(nullif(x->>2, ''), '0')::bigint) as cancelled_at,
+           nullif(x->>3, '') as cancel_reason,
+           to_timestamp(nullif(nullif(x->>4, ''), '0')::bigint) as uncancelled_at,
+           to_timestamp(nullif(nullif(x->>5, ''), '0')::bigint) as expired_at
+    from jsonb_array_elements(p_rows) x
+  ), up as (
+    insert into subscription_status as s (chain, platform, cancelled_at, cancel_reason, uncancelled_at, expired_at)
+    select chain, platform, cancelled_at, case when cancelled_at is not null then cancel_reason end,
+           uncancelled_at, expired_at
+    from r
+    on conflict (chain) do update set
+      platform = excluded.platform, cancelled_at = excluded.cancelled_at, cancel_reason = excluded.cancel_reason,
+      uncancelled_at = excluded.uncancelled_at, expired_at = excluded.expired_at
+    where (s.*) is distinct from (excluded.*)
+    returning 1
+  )
+  select count(*)::int from up;
+$$;
+revoke all on function public.sync_subscription_status(jsonb) from public, anon, authenticated;
+grant execute on function public.sync_subscription_status(jsonb) to service_role;
 
 -- When the data was last refreshed, for the Revenue page.
 create or replace function public.subscription_sync_status()
