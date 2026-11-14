@@ -53,6 +53,9 @@ $$;
 --   set_to_renew = of those, auto-renew is on (no cancellation newer than the
 --                  payment and the last uncancellation) and no billing issue
 --                  since the payment.
+--   active_billing_issue = of the active ones, a billing issue since the payment
+--   active_cancelled     = of the rest, auto-renew turned off
+-- so active_subs = set_to_renew + active_cancelled + active_billing_issue.
 -- set_to_renew / active_subs is the best the next renewal can do.
 -- (Dropped first: adding columns changes the return type.)
 drop function if exists public.revenue_by_plan(text);
@@ -63,7 +66,7 @@ returns table (
   first_purchases int, renewals int, payers int, gross numeric, net numeric, refunds numeric,
   renewal_billing_issues int, renewal_billing_recovered int,
   trial_billing_issues int, trial_billing_recovered int,
-  active_subs int, set_to_renew int
+  active_subs int, set_to_renew int, active_cancelled int, active_billing_issue int
 )
 language sql stable security definer set search_path = public as $$
   with t as (
@@ -129,7 +132,9 @@ language sql stable security definer set search_path = public as $$
     select product_id,
            count(*) filter (where not expired and (period_end > now()
                               or (issue_open and period_end > now() - interval '30 days'))) as active_subs,
-           count(*) filter (where not expired and period_end > now() and not cancelled and not issue_open) as set_to_renew
+           count(*) filter (where not expired and period_end > now() and not cancelled and not issue_open) as set_to_renew,
+           count(*) filter (where not expired and period_end > now() and cancelled and not issue_open) as active_cancelled,
+           count(*) filter (where not expired and issue_open and period_end > now() - interval '30 days') as active_billing_issue
     from state group by product_id
   )
   select sp.product_id, sp.platform, plan_bucket(sp.period_months), sp.list_price_usd, sp.trial_days,
@@ -138,7 +143,8 @@ language sql stable security definer set search_path = public as $$
          coalesce(m.gross, 0), coalesce(m.net, 0), coalesce(m.refunds, 0),
          coalesce(bi.renewal_issues, 0)::int, coalesce(bi.renewal_recovered, 0)::int,
          coalesce(bi.trial_issues, 0)::int, coalesce(bi.trial_recovered, 0)::int,
-         coalesce(ns.active_subs, 0)::int, coalesce(ns.set_to_renew, 0)::int
+         coalesce(ns.active_subs, 0)::int, coalesce(ns.set_to_renew, 0)::int,
+         coalesce(ns.active_cancelled, 0)::int, coalesce(ns.active_billing_issue, 0)::int
   from subscription_products sp
   left join trials tr on tr.product_id = sp.product_id
   left join money m on m.product_id = sp.product_id

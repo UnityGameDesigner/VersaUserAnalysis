@@ -67,6 +67,8 @@ interface PlanRow {
   // retry), and how many of them still have auto-renew on and no billing issue.
   active_subs: number;
   set_to_renew: number;
+  active_cancelled: number; // active, auto-renew turned off
+  active_billing_issue: number; // active, a charge has failed since the last payment
 }
 
 // Only what the payer KPIs need; the rest of revenue_users feeds the dashboard's user table.
@@ -94,7 +96,8 @@ function pct(n: number, d: number): string {
 
 type PlanSort =
   | "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals" | "renewal_billing_issues"
-  | "m1" | "m3" | "m6" | "set_to_renew" | "best";
+  | "m1" | "m3" | "m6" | "set_to_renew" | "best"
+  | "active_cancelled" | "active_billing_issue";
 
 const KEEP_TITLE =
   "Renewal rate: share of subscriptions that started on this plan and were still paying N months after their " +
@@ -159,12 +162,30 @@ const BEST_RENEWAL_TITLE =
   "Best possible renewal rate: set to renew ÷ active subscriptions. The most the plan's next renewal can reach if " +
   "nobody else cancels or hits a billing issue.";
 
-// Two cells: "set to renew" out of active subscriptions, and that as a rate.
-function renewCells(r: { active_subs: number; set_to_renew: number }) {
-  if (!r.active_subs) return [<td key="n">—</td>, <td key="r">—</td>];
-  const lost = r.active_subs - r.set_to_renew;
+const CANCELLED_TITLE =
+  "Active subscriptions on this plan whose auto-renew has been turned off: they keep access until the paid period " +
+  "ends, then lapse unless the user turns it back on.";
+const ISSUE_NOW_TITLE =
+  "Active subscriptions on this plan with a failed charge since their last payment that hasn't been recovered " +
+  "(the store is still retrying, up to 30 days past the period end).";
+
+// Four cells about the plan's active subscriptions: cancelled, in a billing
+// issue, set to renew (the rest), and set to renew as a rate.
+function renewCells(r: { active_subs: number; set_to_renew: number; active_cancelled: number; active_billing_issue: number }) {
+  if (!r.active_subs) return ["c", "i", "n", "r"].map((k) => <td key={k}>—</td>);
+  const share = (n: number) => (
+    <div style={{ fontSize: 11, color: "#6b7280" }}>{Math.round((n / r.active_subs) * 100)}% of active</div>
+  );
   return [
-    <td key="n" title={`${lost.toLocaleString()} of ${r.active_subs.toLocaleString()} active subscriptions are cancelled or in a billing issue`}>
+    <td key="c">
+      {r.active_cancelled.toLocaleString()}
+      {share(r.active_cancelled)}
+    </td>,
+    <td key="i">
+      {r.active_billing_issue.toLocaleString()}
+      {share(r.active_billing_issue)}
+    </td>,
+    <td key="n">
       {r.set_to_renew.toLocaleString()}
       <div style={{ fontSize: 11, color: "#6b7280" }}>of {r.active_subs.toLocaleString()} active</div>
     </td>,
@@ -311,6 +332,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           trial_billing_recovered: num(r.trial_billing_recovered),
           active_subs: num(r.active_subs),
           set_to_renew: num(r.set_to_renew),
+          active_cancelled: num(r.active_cancelled),
+          active_billing_issue: num(r.active_billing_issue),
         })),
       );
       setUsers(
@@ -404,6 +427,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
           trial_billing_recovered: sum("trial_billing_recovered"),
           active_subs: sum("active_subs"),
           set_to_renew: sum("set_to_renew"),
+          active_cancelled: sum("active_cancelled"),
+          active_billing_issue: sum("active_billing_issue"),
         };
       }),
     [plans, bucketsShown, keep],
@@ -724,12 +749,14 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                     <th>Payers</th>
                     <th>First purchases</th>
                     <th>Renewals</th>
-                    <th title={BILLING_TITLE}>Billing issues</th>
+                    <th title={BILLING_TITLE}>Billing issues (all time)</th>
                     {KEEP_MONTHS.map((n) => (
                       <th key={n} title={KEEP_TITLE}>
                         {n === 1 ? "Paying after 1 mo" : `${n} mo`}
                       </th>
                     ))}
+                    <th title={CANCELLED_TITLE}>Cancelled (active)</th>
+                    <th title={ISSUE_NOW_TITLE}>In billing issue now</th>
                     <th title={SET_TO_RENEW_TITLE}>Set to renew</th>
                     <th title={BEST_RENEWAL_TITLE}>Best possible renewal</th>
                     <th>Trial → paid</th>
@@ -805,7 +832,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       onClick={() => setPlanSort("renewal_billing_issues")}
                       title={BILLING_TITLE}
                     >
-                      Billing issues
+                      Billing issues (all time)
                     </th>
                     {KEEP_MONTHS.map((n) => (
                       <th
@@ -817,6 +844,20 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                         {n === 1 ? "Paying after 1 mo" : `${n} mo`}
                       </th>
                     ))}
+                    <th
+                      style={sortTh(planSort === "active_cancelled")}
+                      onClick={() => setPlanSort("active_cancelled")}
+                      title={CANCELLED_TITLE}
+                    >
+                      Cancelled (active)
+                    </th>
+                    <th
+                      style={sortTh(planSort === "active_billing_issue")}
+                      onClick={() => setPlanSort("active_billing_issue")}
+                      title={ISSUE_NOW_TITLE}
+                    >
+                      In billing issue now
+                    </th>
                     <th
                       style={sortTh(planSort === "set_to_renew")}
                       onClick={() => setPlanSort("set_to_renew")}
