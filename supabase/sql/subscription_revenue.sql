@@ -89,6 +89,13 @@ create table if not exists public.subscription_billing_issues (
 );
 create index if not exists subscription_billing_issues_product_idx
   on public.subscription_billing_issues (product_id);
+-- Subscription-chain lookups ("was this chain charged after X?") in
+-- revenue_by_plan / revenue_billing_issues_monthly. Without these each lookup
+-- scanned the whole table and the Revenue page hit the statement timeout.
+create index if not exists subscription_transactions_chain_idx
+  on public.subscription_transactions ((coalesce(original_transaction_id, transaction_id)), purchased_at);
+create index if not exists subscription_billing_issues_chain_idx
+  on public.subscription_billing_issues ((coalesce(original_transaction_id, transaction_id)), occurred_at);
 
 -- Renewal status per store subscription (chain = Superwall's
 -- originalTransactionId = coalesce(original_transaction_id, transaction_id) in

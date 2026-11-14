@@ -24,9 +24,12 @@
 create or replace function public.revenue_plan_retention(p_platform text default null)
 returns json
 language sql stable security definer set search_path = public as $$
-  with as_of as (
+  -- CTEs that get joined are MATERIALIZED so the planner computes each once
+  -- instead of re-running it per outer row (this call sat at 3-5s, close to the
+  -- 8s statement timeout).
+  with as_of as materialized (
     select max(purchased_at)::date - 3 as d from subscription_transactions
-  ), t as (
+  ), t as materialized (
     select st.*, coalesce(st.original_transaction_id, st.transaction_id) as chain
     from subscription_transactions st
     where p_platform is null or st.platform = p_platform
@@ -35,14 +38,14 @@ language sql stable security definer set search_path = public as $$
     select distinct on (chain) chain, event as start_event, product_id, platform, purchased_at as started_at
     from t where event in ('trial_start', 'initial_purchase', 'renewal')
     order by chain, purchased_at, (event = 'renewal')
-  ), chains as (
+  ), chains as materialized (
     select s.*, sp.trial_days,
            case sp.period when 'week' then interval '1 week' when 'month' then interval '1 month'
                           when 'year' then interval '1 year' end * sp.period_count as len
     from starts s
     join subscription_products sp on sp.product_id = s.product_id
     where s.start_event <> 'renewal'
-  ), pay as (
+  ), pay as materialized (
     select p.chain,
            count(*) as payments,
            min(p.purchased_at) as first_paid_at,
@@ -53,18 +56,18 @@ language sql stable security definer set search_path = public as $$
     left join t r on r.transaction_id = p.transaction_id and r.event = 'refund'
     where p.event in ('initial_purchase', 'renewal', 'non_renewing_purchase') and p.price_usd > 0
     group by p.chain
-  ), money as (
+  ), money as materialized (
     select chain, sum(proceeds_usd) as net, bool_or(event = 'refund') as refunded,
            (array_agg(user_id) filter (where user_id is not null))[1] as user_id
     from t where chain in (select chain from chains)
     group by chain
-  ), sub as (
+  ), sub as materialized (
     select c.chain, c.product_id, c.platform, c.start_event, c.started_at, c.trial_days, c.len,
            p.payments, p.first_paid_at, p.gross, p.covered_to, m.net, m.refunded, m.user_id
     from chains c
     left join pay p on p.chain = c.chain
     left join money m on m.chain = c.chain
-  ), eng as (
+  ), eng as materialized (
     -- Distinct days with a lesson in the first 7 / 14 / 30 days after the first
     -- payment. Each window only counts subscriptions at least that old, so a
     -- new plan shows its 7- and 14-day numbers long before it has 30 days.
@@ -164,6 +167,10 @@ language sql stable security definer set search_path = public as $$
   from per_plan pp
   join subscription_products sp on sp.product_id = pp.product_id;
 $$;
+
+-- The materialized CTEs carry no row estimates, so the planner joined them with
+-- nested loops (millions of text comparisons, ~2.7s). Hash joins: ~0.15s, same output.
+alter function public.revenue_plan_retention(text) set enable_nestloop = off;
 
 revoke all on function public.revenue_plan_retention(text) from public, anon;
 grant execute on function public.revenue_plan_retention(text) to authenticated;

@@ -380,7 +380,9 @@ $$;
 create or replace function public.revenue_lapsed_users(p_platform text default null)
 returns json
 language sql stable security definer set search_path = public as $$
-  with as_of as (
+  -- CTEs joined below are MATERIALIZED: inlined, the planner re-ran them once
+  -- per outer row (nested loops over ~1k users) and the call took 40s+.
+  with as_of as materialized (
     select max(purchased_at)::date - 3 as d from subscription_transactions
   ), cov as (
     select st.user_id, st.platform, st.product_id, st.purchased_at,
@@ -405,16 +407,17 @@ language sql stable security definer set search_path = public as $$
   ), spans as (
     select user_id, island, min(s) as s, max(e) as e,
            (array_agg(product_id order by purchased_at desc))[1] as last_product_id,
-           row_number() over (partition by user_id order by max(e) desc) as rn
+           row_number() over (partition by user_id order by max(e) desc) as rn,
+           count(*) over (partition by user_id) as n_spans
     from islands group by user_id, island
-  ), per_user as (
+  ), per_user as materialized (
     select user_id,
            (array_agg(platform order by purchased_at desc))[1] as platform,
            array_agg(distinct product_id) as plans,
            min(purchased_at) as first_paid_at,
            max(purchased_at) as last_paid_at
     from cov group by user_id
-  ), lapsed as (
+  ), lapsed as materialized (
     -- "refunded" if any refund landed during or after the last span: a
     -- purchase refunded the same day leaves no coverage, so it can't be read
     -- off the span itself.
@@ -422,10 +425,10 @@ language sql stable security definer set search_path = public as $$
            exists (select 1 from subscription_transactions r
                    where r.user_id = sp.user_id and r.event = 'refund' and r.purchased_at::date >= sp.s
                      and (p_platform is null or r.platform = p_platform)) as last_refunded,
-           (select count(*) from spans o where o.user_id = sp.user_id)::int as spans
-    from spans sp, as_of
-    where sp.rn = 1 and sp.e <= as_of.d
-  ), lessons as (
+           sp.n_spans::int as spans
+    from spans sp
+    where sp.rn = 1 and sp.e <= (select d from as_of)
+  ), lessons as materialized (
     -- Lessons completed (onboarding lesson 42 excluded): ever, and while paid
     -- (first payment up to the lapse date).
     -- LATERAL so each user is an index probe on (user_id, created_at); a
