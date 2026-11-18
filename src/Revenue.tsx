@@ -19,6 +19,7 @@ import { BUCKETS, BUCKET_COLORS, num, usd, planName } from "./lib/revenueFormat"
 import LapsedUsers from "./LapsedUsers";
 import PlanRetention from "./PlanRetention";
 import BillingIssues from "./BillingIssues";
+import { estimateLtv, lengthCurve, type LtvEstimate, type LtvInput } from "./planLtv";
 
 // The Revenue section of the main dashboard (src/ActiveUserDashboard.tsx) —
 // what each plan brought in. Reads the subscription_transactions /
@@ -96,7 +97,7 @@ function pct(n: number, d: number): string {
 
 type PlanSort =
   | "gross" | "net" | "trial_starts" | "conv" | "first_purchases" | "renewals" | "renewal_billing_issues"
-  | "m1" | "m3" | "m6" | "set_to_renew" | "best"
+  | "m1" | "m3" | "m6" | "set_to_renew" | "best" | "ltv"
   | "active_cancelled" | "active_billing_issue";
 
 const KEEP_TITLE =
@@ -111,12 +112,12 @@ const BILLING_TITLE =
 // "Still paying N months after the first payment" per plan, from
 // revenue_plan_retention (the same numbers as the Plan retention view): kept /
 // eligible, where eligible = subscriptions old enough to have reached month N.
-interface PlanKeep {
-  period_months: number | null;
-  m1_kept: number; m1_elig: number;
-  m3_kept: number; m3_elig: number;
-  m6_kept: number; m6_elig: number;
-}
+// The same rows feed the 12-month LTV estimate (planLtv.ts).
+type PlanKeep = LtvInput;
+const KEEP_FIELDS = [
+  "payments", "gross", "net", "r1_kept", "r1_elig", "r2_kept", "r2_elig",
+  "m1_kept", "m1_elig", "m2_kept", "m2_elig", "m3_kept", "m3_elig", "m6_kept", "m6_elig",
+] as const;
 const KEEP_MONTHS = [1, 3, 6] as const;
 const KEEP_MIN = 5; // below this many eligible subscriptions a rate isn't shown
 const BUCKET_MONTHS: Record<string, number> = { Weekly: 0.25, Monthly: 1, "3-month": 3, Yearly: 12 };
@@ -195,6 +196,32 @@ function renewCells(r: { active_subs: number; set_to_renew: number; active_cance
   ];
 }
 
+const LTV_TITLE =
+  "Estimated gross revenue from a new paying subscriber on this plan in their first 12 months: the average payment × " +
+  "the expected number of payments, from the share still paying at each charge date. Past the plan's own renewal " +
+  "data the curve follows the average for its plan length. A yearly plan is charged once in 12 months, so its figure " +
+  "is the average payment. Net (after store fees and refunds) underneath.";
+
+function ltvCell(e: LtvEstimate | null | undefined, loading: boolean) {
+  if (!e) return <td>{loading ? "…" : "—"}</td>;
+  const n = e.expectedPayments;
+  const how =
+    n === 1
+      ? "One charge in 12 months, so this is the average payment."
+      : e.basis === "length"
+        ? "No renewal data for this plan yet: the renewal curve is the average for its plan length."
+        : `Own renewal data up to month ${Math.round(e.observedTo * 10) / 10}; later months are projected.`;
+  return (
+    <td
+      style={e.basis === "length" ? { color: "#9ca3af" } : undefined}
+      title={`${n.toFixed(n === 1 ? 0 : 1)} expected payment${n === 1 ? "" : "s"} in 12 months × ${usd(e.avgPayment, 2)} average payment. ${how}`}
+    >
+      {usd(e.gross, 2)}
+      <div style={{ fontSize: 11, color: "#6b7280" }}>{usd(e.net, 2)} net</div>
+    </td>
+  );
+}
+
 interface BillingCounts {
   renewal_billing_issues: number;
   renewal_billing_recovered: number;
@@ -251,12 +278,9 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         if (e) setKeepError(e.message);
         else {
           for (const r of (data ?? []) as Record<string, unknown>[]) {
-            m.set(String(r.product_id), {
-              period_months: r.period_months == null ? null : num(r.period_months),
-              m1_kept: num(r.m1_kept), m1_elig: num(r.m1_elig),
-              m3_kept: num(r.m3_kept), m3_elig: num(r.m3_elig),
-              m6_kept: num(r.m6_kept), m6_elig: num(r.m6_elig),
-            });
+            const k = { period_months: r.period_months == null ? null : num(r.period_months) } as PlanKeep;
+            for (const f of KEEP_FIELDS) k[f] = num(r[f]);
+            m.set(String(r.product_id), k);
           }
         }
         setKeep(m);
@@ -403,16 +427,10 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
         const rows = plans.filter((p) => p.bucket === b);
         const sum = (k: keyof PlanRow) => rows.reduce((a, r) => a + (r[k] as number), 0);
         const ks = rows.map((r) => keep.get(r.product_id)).filter((k): k is PlanKeep => !!k);
-        const ksum = (f: keyof PlanKeep) => ks.reduce((a, k) => a + (k[f] as number), 0);
+        const pooled = { period_months: BUCKET_MONTHS[b] ?? null } as PlanKeep;
+        for (const f of KEEP_FIELDS) pooled[f] = ks.reduce((a, k) => a + k[f], 0);
         return {
-          keep: ks.length
-            ? ({
-                period_months: BUCKET_MONTHS[b] ?? null,
-                m1_kept: ksum("m1_kept"), m1_elig: ksum("m1_elig"),
-                m3_kept: ksum("m3_kept"), m3_elig: ksum("m3_elig"),
-                m6_kept: ksum("m6_kept"), m6_elig: ksum("m6_elig"),
-              } as PlanKeep)
-            : undefined,
+          keep: ks.length ? pooled : undefined,
           bucket: b,
           payers: sum("payers"),
           first_purchases: sum("first_purchases"),
@@ -434,9 +452,25 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
     [plans, bucketsShown, keep],
   );
 
+  // Estimated 12-month LTV: per plan length from its pooled renewal curve, per
+  // plan from its own curve, continued with the plan-length curve's shape.
+  const ltv = useMemo(() => {
+    const byLength = new Map<string, LtvEstimate | null>();
+    const byPlan = new Map<string, LtvEstimate | null>();
+    for (const b of byBucket) {
+      byLength.set(b.bucket, estimateLtv(b.keep, null));
+      const shape = b.keep ? lengthCurve(b.keep) : null;
+      for (const p of plans) {
+        if (p.bucket === b.bucket) byPlan.set(p.product_id, estimateLtv(keep.get(p.product_id), shape));
+      }
+    }
+    return { byLength, byPlan };
+  }, [byBucket, plans, keep]);
+
   const sortedPlans = useMemo(() => {
     const key = (p: PlanRow): number => {
       if (planSort === "best") return p.active_subs ? p.set_to_renew / p.active_subs : -1;
+      if (planSort === "ltv") return ltv.byPlan.get(p.product_id)?.gross ?? -1;
       if (planSort === "conv") return p.trials_resolved ? p.trial_conversions / p.trials_resolved : -1;
       if (planSort === "m1" || planSort === "m3" || planSort === "m6") {
         const k = keep.get(p.product_id);
@@ -446,7 +480,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
       return p[planSort];
     };
     return [...plans].sort((a, b) => key(b) - key(a));
-  }, [plans, planSort, keep]);
+  }, [plans, planSort, keep, ltv]);
 
   const sortTh = (active: boolean): React.CSSProperties => ({
     cursor: "pointer",
@@ -738,7 +772,10 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
               after N mo" is the renewal rate: subscriptions that started on the plan and were still paying N
               months after their first payment, of those old enough to tell (greyed where no renewal was due yet).
               "Set to renew" counts the active subscriptions that haven't been cancelled and aren't in a billing
-              issue right now; "Best possible renewal" is that share of all active subscriptions.
+              issue right now; "Best possible renewal" is that share of all active subscriptions. "Est. 12-mo
+              LTV" is what a new paying subscriber is expected to pay in their first 12 months: the average payment
+              × the expected number of payments from the renewal rates so far (greyed where a plan has no renewal
+              data yet and borrows the average for its length). Hover a figure for the working.
               {keepError && <span style={{ color: "#b91c1c" }}> Couldn't load renewal rates: {keepError}</span>}
             </p>
             <div className="table-container" style={{ marginTop: "0.5rem" }}>
@@ -759,6 +796,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                     <th title={ISSUE_NOW_TITLE}>In billing issue now</th>
                     <th title={SET_TO_RENEW_TITLE}>Set to renew</th>
                     <th title={BEST_RENEWAL_TITLE}>Best possible renewal</th>
+                    <th title={LTV_TITLE}>Est. 12-mo LTV</th>
                     <th>Trial → paid</th>
                     <th>Gross</th>
                     <th>Net</th>
@@ -789,6 +827,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       {billingCell(b)}
                       {keepCells(b.keep, keepLoading)}
                       {renewCells(b)}
+                      {ltvCell(ltv.byLength.get(b.bucket), keepLoading)}
                       <td title={`${b.trial_conversions} of ${b.trials_resolved} resolved trials`}>
                         {pct(b.trial_conversions, b.trials_resolved)}
                       </td>
@@ -872,6 +911,9 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                     >
                       Best possible renewal
                     </th>
+                    <th style={sortTh(planSort === "ltv")} onClick={() => setPlanSort("ltv")} title={LTV_TITLE}>
+                      Est. 12-mo LTV
+                    </th>
                     <th style={sortTh(planSort === "gross")} onClick={() => setPlanSort("gross")}>
                       Gross
                     </th>
@@ -902,6 +944,7 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       {billingCell(p)}
                       {keepCells(keep.get(p.product_id), keepLoading)}
                       {renewCells(p)}
+                      {ltvCell(ltv.byPlan.get(p.product_id), keepLoading)}
                       <td>{usd(p.gross)}</td>
                       <td>{usd(p.net)}</td>
                       <td>{p.refunds ? usd(-p.refunds) : "—"}</td>
