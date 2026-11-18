@@ -867,6 +867,13 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       Renewals
                     </th>
                     <th
+                      style={sortTh(planSort === "active_cancelled")}
+                      onClick={() => setPlanSort("active_cancelled")}
+                      title={CANCELLED_TITLE}
+                    >
+                      Cancelled (active)
+                    </th>
+                    <th
                       style={sortTh(planSort === "renewal_billing_issues")}
                       onClick={() => setPlanSort("renewal_billing_issues")}
                       title={BILLING_TITLE}
@@ -883,13 +890,6 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                         {n === 1 ? "Paying after 1 mo" : `${n} mo`}
                       </th>
                     ))}
-                    <th
-                      style={sortTh(planSort === "active_cancelled")}
-                      onClick={() => setPlanSort("active_cancelled")}
-                      title={CANCELLED_TITLE}
-                    >
-                      Cancelled (active)
-                    </th>
                     <th
                       style={sortTh(planSort === "active_billing_issue")}
                       onClick={() => setPlanSort("active_billing_issue")}
@@ -941,9 +941,10 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
                       </td>
                       <td>{p.first_purchases.toLocaleString()}</td>
                       <td>{p.renewals.toLocaleString()}</td>
+                      {renewCells(p)[0] /* Cancelled (active), kept next to Renewals */}
                       {billingCell(p)}
                       {keepCells(keep.get(p.product_id), keepLoading)}
-                      {renewCells(p)}
+                      {renewCells(p).slice(1)}
                       {ltvCell(ltv.byPlan.get(p.product_id), keepLoading)}
                       <td>{usd(p.gross)}</td>
                       <td>{usd(p.net)}</td>
