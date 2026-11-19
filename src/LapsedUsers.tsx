@@ -47,10 +47,15 @@ function csvCell(v: unknown): string {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string) => void }> = ({
-  platform,
-  onUserClick,
-}) => {
+// `compact` is the overview's version (under "Paying subscribers per day"):
+// just the list, most recently lapsed first, in a scrolling box — no KPI
+// cards or plan filters; onOpenFull switches to the full view for those.
+const LapsedUsers: React.FC<{
+  platform: Platform;
+  onUserClick?: (userId: string) => void;
+  compact?: boolean;
+  onOpenFull?: () => void;
+}> = ({ platform, onUserClick, compact = false, onOpenFull }) => {
   const [rows, setRows] = useState<LapsedRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -194,7 +199,7 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
 
   if (loading) {
     return (
-      <div style={{ textAlign: "center", padding: "3rem" }}>
+      <div style={{ textAlign: "center", padding: compact ? "1.5rem" : "3rem" }}>
         <div className="loading-spinner"></div>
         <p className="loading-text">Loading lapsed users…</p>
       </div>
@@ -210,6 +215,8 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
 
   return (
     <>
+      {!compact && (
+      <>
       <p className="ret-chart-sub" style={{ marginTop: "1rem", maxWidth: "80ch" }}>
         Identified users whose paid subscription ended without a renewal (or was refunded), as of{" "}
         <strong>{asOf ? fmtDate(asOf) : "—"}</strong> — 3 days before the newest transaction in the Superwall
@@ -238,8 +245,23 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
           <div className="metric-description">The rest simply didn't renew</div>
         </div>
       </section>
+      </>
+      )}
 
       <div className="chart-container" style={{ marginTop: "1.25rem" }}>
+        {compact && (
+          <>
+            <div className="ret-chart-head">
+              <h3>Lapsed users, most recent first</h3>
+            </div>
+            <p className="ret-chart-sub">
+              {shown.length.toLocaleString()} identified users whose paid subscription ended without a renewal (or was
+              refunded), as of {asOf ? fmtDate(asOf) : "—"}. The chart's "lost" bars also count buyers who never signed
+              in, so they run higher than this list. Click a row for the user's profile.
+            </p>
+          </>
+        )}
+        {!compact && (
         <div style={{ display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
           <div className="ret-seg" role="group" aria-label="Plan length">
             {["all", ...BUCKETS.filter((b) => b !== "One-off")].map((b) => (
@@ -284,6 +306,7 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
             </button>
           </div>
         </div>
+        )}
         <div style={{ display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap", marginTop: "0.75rem" }}>
           <input
             className="tx-search-input"
@@ -299,6 +322,11 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
           <button className="transcript-toggle" onClick={downloadCsv} disabled={shown.length === 0}>
             Download CSV
           </button>
+          {compact && onOpenFull && (
+            <button className="transcript-toggle" onClick={onOpenFull}>
+              Filter by plan →
+            </button>
+          )}
         </div>
 
         {shown.length === 0 ? (
@@ -308,7 +336,10 @@ const LapsedUsers: React.FC<{ platform: Platform; onUserClick?: (userId: string)
               : "No lapsed users match."}
           </div>
         ) : (
-          <div className="table-container" style={{ marginTop: "0.75rem" }}>
+          <div
+            className="table-container"
+            style={{ marginTop: "0.75rem", ...(compact ? { maxHeight: 520, overflowY: "auto" } : {}) }}
+          >
             <table className="data-table">
               <thead className="table-head">
                 <tr>

@@ -759,6 +759,8 @@ const Revenue: React.FC<{ onUserClick?: (userId: string) => void }> = ({ onUserC
             </div>
           )}
 
+          <LapsedUsers platform={platform} onUserClick={onUserClick} compact onOpenFull={() => setView("lapsed")} />
+
           <BillingIssues plans={plans} platform={platform} />
 
           <div className="chart-container" style={{ marginTop: "1.25rem" }}>
